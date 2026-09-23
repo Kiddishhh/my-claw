@@ -11,6 +11,11 @@ from deepagents import create_deep_agent
 from infra.settings import get_settings
 from infra.logging import get_logger
 
+from middleware.audit import ToolAuditMiddleware
+from middleware.cost import CostMeterMiddleware
+from middleware.context import RequestContextMiddleware
+
+
 logger = get_logger()
 
 # DevMate 的人设：只写"领域要求"，
@@ -39,15 +44,21 @@ def build_model():
     )
 
 
-def build_agent():
-    """构建 DevMate 主 Agent，返回一个已编译的 LangGraph 图。
 
-    注意：创建只用 create_deep_agent（官方唯一工厂）。
-    "异步"体现在调用阶段——我们之后用 agent.ainvoke / agent.astream。
+def build_agent(user_id: str = "anonymous", channel: str = "cli"):
+    """第 3 章版：追加 上下文 / 审计 / 成本 三条自定义中间件。
+
+    顺序说明（见 5.2）：列表越靠前 = 越外层。
+    把 RequestContextMiddleware 放最前，让它的 before_agent 最先跑、最早注入身份。
     """
     agent = create_deep_agent(
         model=build_model(),
         system_prompt=DEVMATE_SYSTEM_PROMPT,
+        middleware=[
+            RequestContextMiddleware(user_id=user_id, channel=channel),
+            ToolAuditMiddleware(),
+            CostMeterMiddleware(),
+        ],
     )
-    logger.info("DevMate 主 Agent 构建完成：model={}", get_settings().model_name)
+    logger.info("DevMate 构建完成：已挂载 上下文 / 审计 / 成本 中间件")
     return agent
