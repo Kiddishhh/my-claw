@@ -1,0 +1,4 @@
+interface:
+  display_name: "my-claw 代码规范与审查"
+  short_description: "面向 my-claw 的异步开发规范、状态更新检查与证据驱动代码审查"
+  default_prompt: "使用 $my-claw-code-quality 按项目规范完成当前代码修改或 review，并报告验证结果。"

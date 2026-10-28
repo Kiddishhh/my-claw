@@ -1,7 +1,11 @@
 # .gitignore
 .env
+.env.docker
 .venv/
 __pycache__/
 *.pyc
 logs/
 .DS_Store
+*.egg-info/
+build/
+dist/

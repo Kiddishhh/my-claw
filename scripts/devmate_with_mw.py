@@ -1,8 +1,9 @@
-"""scripts/ch03_devmate_with_mw.py —— 第 3 章：带审计/成本/上下文中间件跑 DevMate
+"""scripts/devmate_with_mw.py —— 带审计/成本/上下文中间件跑 DevMate
 
-运行（项目根目录）：uv run python -m scripts.ch03_devmate_with_mw
+运行（项目根目录）：uv run --all-extras python -m scripts.devmate_with_mw
 """
 import asyncio
+import uuid
 
 from agent.main import build_agent
 from scripts._common import print_all
@@ -18,7 +19,8 @@ async def main():
     )
 
     result = await agent.ainvoke(
-        {"messages": [{"role": "user", "content": task}]}
+        {"messages": [{"role": "user", "content": task}]},
+        config={"configurable": {"thread_id": uuid.uuid4().hex}},
     )
 
     print_all(result)

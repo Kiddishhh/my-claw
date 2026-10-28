@@ -7,6 +7,7 @@
 import asyncio
 from pathlib import Path
 import sys
+import uuid
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +41,8 @@ async def main():
 
     # 调用：异步 await agent.ainvoke(...)
     result = await agent.ainvoke(
-        {"messages": [{"role": "user", "content": task}]}
+        {"messages": [{"role": "user", "content": task}]},
+        config={"configurable": {"thread_id": uuid.uuid4().hex}},
     )
 
     print_all(result)        # 统一用 _common 的打印工具

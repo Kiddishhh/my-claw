@@ -7,6 +7,7 @@
 import asyncio
 from pathlib import Path
 import sys
+import uuid
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,7 @@ async def main():
     # stream_mode="updates"：只打印每一步"新产生"的更新，最适合观察 Agent 决策过程
     async for chunk in agent.astream(
         {"messages": [{"role": "user", "content": MULTI_STEP_TASK}]},
+        config={"configurable": {"thread_id": uuid.uuid4().hex}},
         stream_mode="updates",
     ):
         for node_name, update in chunk.items():

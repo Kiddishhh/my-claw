@@ -47,8 +47,19 @@ deploy = ["gunicorn>=22.0.0"]
 # 可观测 + 压测：第 12 章
 obs = ["langsmith>=0.3.0", "prometheus-client>=0.20.0", "locust>=2.29.0"]
 
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = false
+
+# 保留现有顶层模块布局；显式查找包，避免自动布局推断选中 src/。
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", "src*"]
+namespaces = false
+
 [tool.uv]
-# my-claw 是应用项目（不发布到 PyPI），不需要把自己打成包。
-# 设为非包项目：uv sync 只装依赖、不构建本项目本身。
-# 否则 uv 会尝试用 hatchling 构建本项目，但因没有与项目同名的 my_claw/ 目录而报错。
-package = false
+# uv sync 将项目自身以可编辑方式安装到 .venv，直接运行脚本也能导入项目模块。
+package = true

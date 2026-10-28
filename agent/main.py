@@ -1,12 +1,17 @@
 """
-agent/main.py —— 构建 DevMate 主 Agent（L3 的心脏）
+agent/main.py —— 本地 DevMate：FilesystemBackend + Skills + Memory。
 
-- 模型来自第 1 章的配置中枢（多模型路由的雏形，第 7 章做成抽象层）
-- 用官方唯一的工厂 create_deep_agent 构建；之后统一用 ainvoke/astream 异步调用
-- system_prompt 是 DevMate 的"领域人设"，会追加到 DeepAgents 内置提示词之后
+文件工具直接访问项目目录，仅用于受信任的本地开发，不提供操作系统级沙箱隔离。
 """
+from pathlib import Path
+
+from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
 from langchain.chat_models import init_chat_model
+from langchain_core.language_models.chat_models import BaseChatModel
 from deepagents import create_deep_agent
+from deepagents.backends import FilesystemBackend
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph.state import CompiledStateGraph
 
 from infra.settings import get_settings
 from infra.logging import get_logger
@@ -17,6 +22,10 @@ from middleware.context import RequestContextMiddleware
 
 
 logger = get_logger()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# 虚拟路径相对于 FilesystemBackend 根目录，不是 Windows 系统盘路径。
+SKILLS_SOURCES = ["/.agents/skills/"]
+MEMORY_SOURCES = ["/AGENTS.md"]
 
 # DevMate 的人设：只写"领域要求"，
 # "如何用 write_todos / 文件工具"这类通用本领由 DeepAgents 内置提示词负责。
@@ -24,14 +33,14 @@ DEVMATE_SYSTEM_PROMPT = """你是 DevMate，一个严谨的研发助手，服务
 
 工作准则：
 - 动手前先用 write_todos 写出清晰的任务清单，并随进展更新它。
-- 写代码遵循团队规范：类型注解齐全、函数职责单一、关键逻辑配 docstring。
+- 写代码遵循已加载的 AGENTS.md；相关任务先阅读已发现的项目 skill。
 - 不臆测：信息不足时先用 read_file / grep 读相关文件再动手。
 - 每次改动后，用一两句话说明"改了什么、为什么这么改"。
 """
 
 
-def build_model():
-    """按第 1 章的配置构建模型。换模型只改 .env，不改这里。"""
+def build_model() -> BaseChatModel:
+    """按配置构建模型。"""
     s = get_settings()
     return init_chat_model(
         model=s.model_name,
@@ -45,20 +54,48 @@ def build_model():
 
 
 
-def build_agent(user_id: str = "anonymous", channel: str = "cli"):
-    """第 3 章版：追加 上下文 / 审计 / 成本 三条自定义中间件。
+def build_agent(
+    user_id: str = "anonymous",
+    channel: str = "cli",
+    max_model_calls: int | None = None,
+    *,
+    workspace_root: Path | None = None,
+    model: BaseChatModel | None = None,
+) -> CompiledStateGraph:
+    """构建本地文件 Agent，加载项目技能和规则。
 
-    顺序说明（见 5.2）：列表越靠前 = 越外层。
-    把 RequestContextMiddleware 放最前，让它的 before_agent 最先跑、最早注入身份。
+    max_model_calls 是每次运行的模型调用上限；None 不额外限制。
+    MemorySaver 仅在本 Agent 实例的进程内保存状态。调用时须传 thread_id，
+    同一实例中复用 thread_id 可延续会话，重启进程不会保留 checkpoint。
+    workspace_root 与 model 可用于隔离工作目录及离线测试，省略时使用项目目录和配置模型。
     """
-    agent = create_deep_agent(
-        model=build_model(),
-        system_prompt=DEVMATE_SYSTEM_PROMPT,
-        middleware=[
-            RequestContextMiddleware(user_id=user_id, channel=channel),
-            ToolAuditMiddleware(),
-            CostMeterMiddleware(),
-        ],
+    if max_model_calls is not None and (
+        type(max_model_calls) is not int or max_model_calls <= 0
+    ):
+        raise ValueError("max_model_calls 必须是正整数或 None")
+
+    backend = FilesystemBackend(
+        root_dir=workspace_root if workspace_root is not None else PROJECT_ROOT,
+        virtual_mode=True,
     )
-    logger.info("DevMate 构建完成：已挂载 上下文 / 审计 / 成本 中间件")
+    middleware: list[AgentMiddleware] = [
+        RequestContextMiddleware(user_id=user_id, channel=channel),
+        ToolAuditMiddleware(),
+        CostMeterMiddleware(),
+    ]
+    if max_model_calls is not None:
+        middleware.append(
+            ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="end")
+        )
+
+    agent = create_deep_agent(
+        model=model if model is not None else build_model(),
+        system_prompt=DEVMATE_SYSTEM_PROMPT,
+        backend=backend,
+        skills=SKILLS_SOURCES,
+        memory=MEMORY_SOURCES,
+        middleware=middleware,
+        checkpointer=MemorySaver(),
+    )
+    logger.info("DevMate 构建完成：本地文件系统 / skills / memory / 中间件")
     return agent

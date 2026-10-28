@@ -33,9 +33,9 @@ class TodoScriptTests(unittest.TestCase):
             (agent_dir / "__init__.py").touch()
             (agent_dir / "main.py").write_text(
                 "class FakeAgent:\n"
-                "    async def ainvoke(self, payload):\n"
+                "    async def ainvoke(self, payload, **kwargs):\n"
                 "        return {}\n\n"
-                "    async def astream(self, payload, stream_mode):\n"
+                "    async def astream(self, payload, stream_mode, **kwargs):\n"
                 "        yield {}\n\n"
                 "def build_agent():\n"
                 "    return FakeAgent()\n",
