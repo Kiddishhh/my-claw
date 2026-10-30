@@ -1,6 +1,7 @@
 # .gitignore
 .env
 .env.docker
+.sandbox-state/
 .venv/
 __pycache__/
 *.pyc
@@ -9,3 +10,11 @@ logs/
 *.egg-info/
 build/
 dist/
+outputs/analysis/
+data/inputs/*
+!data/inputs/example_sales.csv
+
+# 本地工具缓存和旧虚拟环境
+.pytest_cache/
+venv/
+.idea/

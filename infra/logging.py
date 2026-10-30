@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from loguru import logger
-from infra.settings import get_settings
+from infra.settings import LoggingSettings
 
 _CONFIGURED = False
 
@@ -14,7 +14,8 @@ def setup_logging() -> None:
     if _CONFIGURED:
         return
 
-    level = get_settings().log_level
+    # 日志初始化不应要求模型凭据，尤其是只运行计算库的远程沙箱。
+    level = LoggingSettings().log_level
 
     # 清掉 loguru 默认 handler，重新按需添加
     logger.remove()

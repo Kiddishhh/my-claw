@@ -38,7 +38,7 @@ git diff --check
 
 直接运行 `scripts/devmate_with_mw.py` 会调用真实模型，不能用它代替纯导入测试。
 优先使用 `tests/test_project_imports.py` 的隔离方式。读取实际文件确认当前入口集合。
-部分模块导入时会初始化日志、加载 settings 并写入相对 cwd 的 logs；导入验证使用临时工作目录、占位凭据和关闭的追踪，不将“未执行 main”等同于没有副作用。
+部分模块导入时会初始化日志、加载 settings 并写入相对 cwd 的 logs；导入验证使用临时工作目录、占位模型凭据；追踪遵循环境配置，不将“未执行 main”等同于没有副作用。
 
 ## Review 模式
 

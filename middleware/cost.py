@@ -4,6 +4,8 @@
 并按官方规范用 ExtendedModelResponse + Command 把累计用量写进 agent 状态。
 本章只计量；真正的"超预算熔断"在第 11 章基于本中间件实现。
 """
+from typing import Annotated
+from langchain.agents.middleware.types import PrivateStateAttr
 from collections.abc import Callable
 
 from langchain.agents.middleware import (
@@ -23,8 +25,8 @@ logger = get_logger()
 
 class CostState(AgentState):
     """在 agent 状态里加三个累计字段（用 NotRequired，调用方无需初始化）。"""
-    total_input_tokens: NotRequired[int]
-    total_output_tokens: NotRequired[int]
+    total_input_tokens: NotRequired[Annotated[int, PrivateStateAttr]]
+    total_output_tokens: NotRequired[Annotated[int, PrivateStateAttr]]
 
 
 class CostMeterMiddleware(AgentMiddleware):

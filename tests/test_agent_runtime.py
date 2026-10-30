@@ -4,34 +4,11 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from typing import Any
 
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import Field
+from langchain_core.messages import AIMessage, ToolMessage
 
 from agent import main as agent_main
-
-
-class ScriptedModel(BaseChatModel):
-    replies: list[AIMessage]
-    seen_messages: list[list[BaseMessage]] = Field(default_factory=list)
-
-    @property
-    def _llm_type(self) -> str:
-        return "offline-scripted-model"
-
-    def bind_tools(self, tools: Any, **kwargs: Any) -> BaseChatModel:
-        return self
-
-    def _generate(
-        self, messages: list[BaseMessage], stop: list[str] | None = None,
-        run_manager: Any = None, **kwargs: Any,
-    ) -> ChatResult:
-        reply = self.replies[min(len(self.seen_messages), len(self.replies) - 1)]
-        self.seen_messages.append(list(messages))
-        return ChatResult(generations=[ChatGeneration(message=reply)])
+from scripts._verification import ScriptedModel
 
 
 class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -59,7 +36,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             AIMessage(content="done"),
         ])
         with patch.object(agent_main, "build_model", return_value=model):
-            agent = agent_main.build_agent(user_id="alice", max_model_calls=3)
+            agent = agent_main.build_local_agent(user_id="alice", max_model_calls=3)
         config = {"configurable": {"thread_id": "memory-skills-test"}}
         result = await agent.ainvoke({"messages": [{"role": "user", "content": "first-turn"}]}, config)
         self.assertEqual(result["messages"][-1].content, "done")
@@ -82,7 +59,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(agent_main, "PROJECT_ROOT", root), patch.object(
             agent_main, "build_model", return_value=model,
         ):
-            agent = agent_main.build_agent(max_model_calls=1)
+            agent = agent_main.build_local_agent(max_model_calls=1)
         await agent.ainvoke(
             {"messages": [{"role": "user", "content": "hello"}]},
             {"configurable": {"thread_id": "project-rules"}},
@@ -96,7 +73,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "name": "ls", "args": {"path": "/"}, "id": "list-root", "type": "tool_call",
         }])])
         with patch.object(agent_main, "build_model", return_value=model):
-            agent = agent_main.build_agent(max_model_calls=2)
+            agent = agent_main.build_local_agent(max_model_calls=2)
         result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": "keep listing"}]},
             {"configurable": {"thread_id": "limited-run"}},
@@ -107,10 +84,10 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_none_means_unlimited_and_invalid_limits_are_rejected(self) -> None:
         model = ScriptedModel(replies=[AIMessage(content="done")])
         with patch.object(agent_main, "build_model", return_value=model):
-            agent = agent_main.build_agent(max_model_calls=None)
+            agent = agent_main.build_local_agent(max_model_calls=None)
             for invalid in [0, -1, True, 1.5]:
                 with self.subTest(limit=invalid), self.assertRaises(ValueError):
-                    agent_main.build_agent(max_model_calls=invalid)
+                    agent_main.build_local_agent(max_model_calls=invalid)
         result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": "hello"}]},
             {"configurable": {"thread_id": "unlimited-run"}},

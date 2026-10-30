@@ -147,7 +147,7 @@ def test_import_from_external_directory_without_pythonpath(tmp_path: Path, mode:
     )
     result = subprocess.run(
         [sys.executable, "-c", code, str(root / "tools/test_tools.py")], cwd=tmp_path,
-        env=os.environ | {"PYTHONPATH": "", "LANGSMITH_TRACING": "false"},
+        env=os.environ | {"PYTHONPATH": ""},
         capture_output=True, text=True, encoding="utf-8", timeout=30,
     )
     assert result.returncode == 0, result.stderr

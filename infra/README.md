@@ -44,5 +44,5 @@ docker compose --env-file .env.docker down
 
 ```powershell
 uv sync --locked --all-extras
-uv run --all-extras python -m scripts.todo_test
+uv run --all-extras python -m tests.verify_env
 ```

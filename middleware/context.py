@@ -4,6 +4,8 @@
 节点式钩子直接 return dict 合并进状态（官方规范）。
 需要声明 state_schema，让状态能容纳这几个新字段。
 """
+from typing import Annotated
+from langchain.agents.middleware.types import PrivateStateAttr
 import uuid
 from typing import Any
 
@@ -18,9 +20,9 @@ logger = get_logger()
 
 class RequestContextState(AgentState):
     """扩展状态：把请求身份带进 agent（NotRequired，调用方可不传）。"""
-    request_id: NotRequired[str]
-    user_id: NotRequired[str]
-    channel: NotRequired[str]
+    request_id: NotRequired[Annotated[str, PrivateStateAttr]]
+    user_id: NotRequired[Annotated[str, PrivateStateAttr]]
+    channel: NotRequired[Annotated[str, PrivateStateAttr]]
 
 
 class RequestContextMiddleware(AgentMiddleware):

@@ -239,8 +239,28 @@ def test_retry_usage_cannot_reduce_total(used: object) -> None:
         asyncio.run(common.run_attempts(once, 1))
 
 
-def test_existing_print_helpers_still_work(capsys) -> None:
-    common.print_all({"messages": [AIMessage(content="hello")], "files": {"a.py": "code"},
-                      "todos": [{"content": "task", "status": "completed"}]})
+def test_verification_trace_prints_summary_without_prompt(tmp_path, capsys) -> None:
+    """验收回调输出摘要，保留工具原始结果用于断言且不打印提示词。"""
+    import json
+    import uuid
+    from langchain_core.outputs import ChatGeneration, LLMResult
+    from scripts._verification import VerificationTrace
+
+    trace = VerificationTrace(tmp_path / "events.jsonl", "memory-marker")
+    run_id = uuid.uuid4()
+    async def scenario():
+        await trace.on_chat_model_start({}, [[HumanMessage(content="PRIVATE_PROMPT")]], run_id=run_id)
+        await trace.on_llm_end(LLMResult(generations=[[ChatGeneration(message=AIMessage(
+            content="x" * 500 + "REPLY_TAIL",
+            usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        ))]]), run_id=run_id)
+        await trace.on_tool_start({"name": "read_file"}, "", inputs={"file_path": "/demo"}, run_id=run_id)
+        await trace.on_tool_end(ToolMessage(content="y" * 500 + "TOOL_TAIL", tool_call_id="test"), run_id=run_id)
+    asyncio.run(scenario())
     output = capsys.readouterr().out
-    assert all(value in output for value in ["hello", "a.py", "code", "task"])
+    assert "模型第 1 轮" in output and "input=10 output=5" in output
+    assert "read_file" in output and "状态=success" in output
+    assert all(text not in output for text in ["PRIVATE_PROMPT", "REPLY_TAIL", "TOOL_TAIL"])
+    assert trace.tools[str(run_id)]["output"].endswith("TOOL_TAIL")
+    events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
+    assert "messages" not in events[0]

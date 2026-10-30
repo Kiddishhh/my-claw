@@ -1,33 +1,30 @@
 """测试入口：复用 scripts._common 验证 Skills / Memory / FilesystemBackend。
 
-运行：uv run --all-extras python tests/verify_agent.py --offline（或 --live）。
+直接运行默认调用真实模型；加 --offline 使用模拟模型，不产生 API 费用。
 """
 
 import argparse
 import asyncio
 from dataclasses import asdict
-from datetime import datetime
 import json
 from pathlib import Path
 import re
 import sys
-import time
+import traceback
 from typing import Any
 import uuid
 
-from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
-from langsmith import tracing_context
+from langchain_core.outputs import ChatGeneration, ChatResult
 
+from scripts._verification import SKILL_NAME, VerificationTrace
 from scripts._common import (
     Check, _redact, _short, called, first_turn, print_run, report,
     run_with_budget, written_paths,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SKILL_NAME = "my-claw-code-quality"
 SKILL_PATH = f"/.agents/skills/{SKILL_NAME}/SKILL.md"
 OUTPUT_PATH = "/verification.json"
 
@@ -73,85 +70,9 @@ class OfflineProbeModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=message)])
 
 
-class VerificationTrace(AsyncCallbackHandler):
-    """将实际模型调用和工具执行回调写到终端及 JSONL，保留调用 ID。"""
-
-    def __init__(self, path: Path, memory_code: str) -> None:
-        self.path = path
-        self.memory_code = memory_code
-        self.started = time.perf_counter()
-        self.model_calls = 0
-        self.memory_in_prompt = False
-        self.skill_in_prompt = False
-        self.usage_calls = 0
-        self.tools: dict[str, dict[str, Any]] = {}
-        self.model_rounds: dict[str, int] = {}
-
-    def record(self, event: str, **fields: Any) -> None:
-        """打印并追加一条脱敏、带时间戳的结构化记录。"""
-        item = _redact({"time": datetime.now().astimezone().isoformat(),
-                        "elapsed_ms": round((time.perf_counter() - self.started) * 1000),
-                        "event": event, **fields})
-        line = json.dumps(item, ensure_ascii=False, default=str)
-        print(line, flush=True)
-        with self.path.open("a", encoding="utf-8") as output:
-            output.write(line + "\n")
-
-    async def on_chat_model_start(
-        self, serialized: dict[str, Any], messages: list[list[BaseMessage]],
-        *, run_id: uuid.UUID, **kwargs: Any,
-    ) -> None:
-        self.model_calls += 1
-        self.model_rounds[str(run_id)] = self.model_calls
-        system = "\n".join(str(m.content) for group in messages for m in group if m.type == "system")
-        self.memory_in_prompt |= self.memory_code in system
-        self.skill_in_prompt |= SKILL_NAME in system
-        self.record("model_start", round=self.model_calls, run_id=str(run_id),
-                    message_count=sum(len(group) for group in messages),
-                    memory_in_prompt=self.memory_in_prompt, skill_list_in_prompt=self.skill_in_prompt)
-
-    async def on_llm_end(self, response: LLMResult, *, run_id: uuid.UUID, **kwargs: Any) -> None:
-        for group in response.generations:
-            for generation in group:
-                message = getattr(generation, "message", None)
-                usage = getattr(message, "usage_metadata", None)
-                self.usage_calls += bool(usage)
-                self.record("model_end", round=self.model_rounds.get(str(run_id)), run_id=str(run_id),
-                            usage=usage, reply=_short(getattr(message, "content", ""), 300),
-                            tool_calls=getattr(message, "tool_calls", []))
-
-    async def on_llm_error(self, error: BaseException, *, run_id: uuid.UUID, **kwargs: Any) -> None:
-        self.record("model_error", round=self.model_rounds.get(str(run_id)),
-                    run_id=str(run_id), error_type=type(error).__name__)
-
-    async def on_tool_start(
-        self, serialized: dict[str, Any], input_str: str, *, run_id: uuid.UUID,
-        inputs: dict[str, Any] | None = None, **kwargs: Any,
-    ) -> None:
-        self.tools[str(run_id)] = {"name": serialized.get("name"), "args": inputs or {},
-                                   "round": self.model_calls, "started": time.perf_counter()}
-        self.record("tool_start", round=self.model_calls, run_id=str(run_id),
-                    tool=serialized.get("name"), args=_short(inputs or input_str, 600))
-
-    async def on_tool_end(self, output: Any, *, run_id: uuid.UUID, **kwargs: Any) -> None:
-        info = self.tools.get(str(run_id), {})
-        info["status"] = getattr(output, "status", "success")
-        info["output"] = str(getattr(output, "content", output))
-        self.record("tool_end", round=info.get("round"), run_id=str(run_id),
-                    tool=info.get("name"), status=info["status"],
-                    duration_ms=round((time.perf_counter() - info.get("started", time.perf_counter())) * 1000),
-                    result=_short(info["output"], 600))
-
-    async def on_tool_error(self, error: BaseException, *, run_id: uuid.UUID, **kwargs: Any) -> None:
-        info = self.tools.get(str(run_id), {})
-        info["status"] = "error"
-        self.record("tool_error", round=info.get("round"), run_id=str(run_id),
-                    tool=info.get("name"), error_type=type(error).__name__)
-
-
 async def run_verification(
     *, log_root: Path | None = None, live: bool = False,
-    max_model_calls: int = 6, max_input_tokens: int = 30000,
+    max_model_calls: int = 6, max_input_tokens: int = 50000,
     timeout: float = 120, model: BaseChatModel | None = None,
 ) -> dict[str, Any]:
     """运行隔离验证并保存报告；默认离线，返回 passed 和具体停止原因。"""
@@ -191,7 +112,8 @@ async def run_verification(
         f"用 write_file 创建 {OUTPUT_PATH}，写入 JSON 对象，键为 memory_code 和 skill_code，值使用实际标记。"
         f"再用 read_file 读回 {OUTPUT_PATH} 并简述结果。不得猜测标记、修改规范或读取其它文件。"
     )
-    config = {"configurable": {"thread_id": f"verification-{run_id}"}, "callbacks": [trace]}
+    trace.record("input", task=task)
+    config = {"configurable": {"thread_id": f"verification-{run_id}"}, "callbacks": [trace], "run_name": f"my-claw-verification-{run_id}"}
     state: dict[str, Any] = {}
     budget_hit = call_limit_hit = False
     reason, error_type = "completed", None
@@ -211,31 +133,36 @@ async def run_verification(
                          messages=len(state.get("messages", [])))
 
     try:
-        from agent.main import build_agent
+        from agent.main import build_local_agent as build_agent
 
         agent = build_agent(user_id="verification", channel=mode, max_model_calls=max_model_calls,
                             workspace_root=workspace, model=model if model is not None else (
                                 None if live else OfflineProbeModel()))
-        # 验证日志只保存到本地，避免将场景内容另外发送给远程追踪服务。
-        with tracing_context(enabled=False):
-            async with asyncio.timeout(timeout):
-                state, budget_hit = await run_with_budget(
-                    agent, task, max_input_tokens=max_input_tokens,
-                    config=config, on_event=observe_event,
-                )
+        # 真实、离线及注入模型均遵循统一的 LangSmith 环境配置。
+        async with asyncio.timeout(timeout):
+            state, budget_hit = await run_with_budget(
+                agent, task, max_input_tokens=max_input_tokens,
+                config=config, on_event=observe_event,
+            )
         if budget_hit:
             reason = "input_budget"
         elif call_limit_hit:
             reason = "model_call_limit"
     except TimeoutError:
         reason, error_type = "timeout", "TimeoutError"
-        trace.record("timeout", seconds=timeout)
+        trace.record("timeout", seconds=timeout, traceback=traceback.format_exc())
     except Exception as error:
         reason, error_type = "error", type(error).__name__
-        trace.record("error", error_type=error_type, http_status=getattr(error, "status_code", None))
+        trace.record("error", error_type=error_type, http_status=getattr(error, "status_code", None),
+                     traceback=traceback.format_exc())
 
     # checkpoint 中包含未公开到结果接口的技能元数据等字段。
-    checkpoint = (await agent.aget_state(config)).values if agent is not None else {}
+    try:
+        checkpoint = (await agent.aget_state(config)).values if agent is not None else {}
+    except Exception as error:
+        checkpoint = {}
+        reason, error_type = "error", type(error).__name__
+        trace.record("checkpoint_error", error_type=error_type, traceback=traceback.format_exc())
     loaded_memory = checkpoint.get("memory_contents", {})
     loaded_skills = checkpoint.get("skills_metadata", []) or []
     artifact = workspace / OUTPUT_PATH.lstrip("/")
@@ -283,15 +210,15 @@ def main() -> int:
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
-    modes.add_argument("--live", action="store_true", help="请求 .env 配置的真实模型，会产生费用")
-    modes.add_argument("--offline", action="store_true", help="使用离线模型，默认模式")
+    modes.add_argument("--live", action="store_true", help="请求 .env 配置的真实模型（默认），会产生费用")
+    modes.add_argument("--offline", action="store_true", help="使用离线模拟模型，不请求真实接口")
     parser.add_argument("--max-model-calls", type=int, default=6)
-    parser.add_argument("--max-input-tokens", type=int, default=30000)
+    parser.add_argument("--max-input-tokens", type=int, default=50000)
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--log-dir", type=Path, default=None)
     args = parser.parse_args()
     return 0 if asyncio.run(run_verification(
-        live=args.live, max_model_calls=args.max_model_calls, max_input_tokens=args.max_input_tokens,
+        live=not args.offline, max_model_calls=args.max_model_calls, max_input_tokens=args.max_input_tokens,
         timeout=args.timeout, log_root=args.log_dir,
     ))["passed"] else 1
 

@@ -13,26 +13,35 @@
       "justMyCode": true
     },
     {
-      "name": "DevMate: 普通调用",
+      "name": "DevMate: Daytona 沙箱",
       "type": "debugpy",
       "request": "launch",
-      "module": "scripts.todo_test",
+      "module": "scripts.devmate_with_mw",
       "python": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
-      "justMyCode": true
+      "justMyCode": true,
+      "args": [
+        "--thread-id",
+        "ide-session",
+        "--task",
+        "检查项目并总结，不修改文件"
+      ]
     },
     {
-      "name": "DevMate: 流式调用",
+      "name": "DevMate: 本地开发工具验收",
       "type": "debugpy",
       "request": "launch",
-      "module": "scripts.todo_astream_test",
+      "module": "tests.verify_development_tools",
       "python": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
-      "justMyCode": true
+      "justMyCode": true,
+      "args": [
+        "--offline"
+      ]
     }
   ]
 }

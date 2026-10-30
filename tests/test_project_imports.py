@@ -12,16 +12,17 @@ class ProjectImportTests(unittest.TestCase):
     def test_all_entry_files_import_outside_repository_without_pythonpath(self):
         root = Path(__file__).resolve().parents[1]
         entries = [
-            "scripts/todo_test.py",
-            "scripts/todo_astream_test.py",
+            "scripts/sandbox_cleanup.py",
+            "tests/verify_agent.py",
+            "tests/verify_development_tools.py",
+            "tests/verify_daytona.py",
             "scripts/devmate_with_mw.py",
-            "tests/veify_env.py",
+            "tests/verify_env.py",
         ]
         env = os.environ | {
             "PYTHONPATH": "",
             "PYTHONIOENCODING": "utf-8",
             "SYC_API_KEY": "import-check-placeholder",
-            "LANGSMITH_TRACING": "false",
         }
         with tempfile.TemporaryDirectory() as cwd:
             for entry in entries:

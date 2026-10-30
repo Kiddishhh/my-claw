@@ -15,20 +15,20 @@ dependencies = [
     "langchain>=1.1.0",                   # 构建模块（init_chat_model / 模型 profiles）
     "langgraph>=1.1.0",                   # 编排运行时（checkpointer / streaming / HITL）
     "langchain-openai>=0.3.0",            # 模型集成包（国产模型走 OpenAI 兼容接口）
-
     # ===== 持久化底座 + 异步驱动栈（L9，本章备好）=====
     "langgraph-checkpoint-postgres>=3.0.0",  # PostgresSaver / AsyncPostgresSaver + store
     "psycopg[binary,pool]>=3.2.0",           # Postgres 驱动（psycopg3）+ 异步连接池（后半第8章用）
     "redis>=5.0.0",                          # Redis 客户端，自带 redis.asyncio 异步接口
-
     # ===== Web 服务（后半第 8 章起用，本章先备好）=====
     "fastapi>=0.115.0",                   # 异步 Web 框架
     "uvicorn[standard]>=0.30.0",          # ASGI 服务器
-
     # ===== 配置与日志 =====
     "loguru>=0.7.0",
     "pydantic-settings>=2.0.0",           # 配置体系（见第 4.3 节）
     "python-dotenv>=1.0.0",               # 加载 .env
+    "pandas>=2.2,<4",
+    "openpyxl>=3.1,<4",
+    "matplotlib>=3.9,<4",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +46,11 @@ serving = ["arq>=0.26.0", "slowapi>=0.1.9", "sse-starlette>=2.1.0"]
 deploy = ["gunicorn>=22.0.0"]
 # 可观测 + 压测：第 12 章
 obs = ["langsmith>=0.3.0", "prometheus-client>=0.20.0", "locust>=2.29.0"]
+daytona = [
+    "daytona==0.227.0",
+    "filelock==4.2.4",
+    "langchain-daytona==0.0.9",
+]
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -63,3 +68,7 @@ namespaces = false
 [tool.uv]
 # uv sync 将项目自身以可编辑方式安装到 .venv，直接运行脚本也能导入项目模块。
 package = true
+
+[tool.pytest.ini_options]
+# logs/ 中的验收副本不是正式测试，避免重复收集同名模块。
+testpaths = ["tests"]

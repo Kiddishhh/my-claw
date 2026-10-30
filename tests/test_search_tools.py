@@ -292,7 +292,7 @@ def test_tools_import_outside_project_without_pythonpath(tmp_path: Path, mode: s
     completed = subprocess.run(
         [sys.executable, "-c", code, str(root / "tools/search_tools.py")],
         cwd=tmp_path,
-        env=os.environ | {"PYTHONPATH": "", "SYC_API_KEY": "offline-placeholder", "LANGSMITH_TRACING": "false"},
+        env=os.environ | {"PYTHONPATH": "", "SYC_API_KEY": "offline-placeholder"},
         capture_output=True, text=True, encoding="utf-8", timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
@@ -310,7 +310,7 @@ def test_direct_launch_prints_question_and_results(tmp_path: Path, launch: str) 
     completed = subprocess.run(
         command, cwd=tmp_path if launch == "file" else root,
         env=os.environ | {"PYTHONPATH": "", "PYTHONUTF8": "1", "PYTEST_ADDOPTS": "",
-                          "SYC_API_KEY": "offline-placeholder", "LANGSMITH_TRACING": "false"},
+                          "SYC_API_KEY": "offline-placeholder"},
         capture_output=True, text=True, encoding="utf-8", timeout=30,
     )
     assert completed.returncode == 0, completed.stderr + completed.stdout
