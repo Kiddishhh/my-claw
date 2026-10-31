@@ -5,7 +5,7 @@ description: 将本地表格分析结果制作为图表、CSV/XLSX 结果表和 
 
 # 分析结果与报告
 
-Daytona 模式通过远程 execute 运行现有表格库：绘图和导出必须与检查、分析处于同一个 Python 进程、同一组工具实例中。详见 local-data-analysis 的运行环境规则。
+Daytona 模式通过 execute 运行独立 Python 计算与绘图代码，输出 CSV/XLSX、图表和报告。后文工具名/result_id 仅适用于本地表格工具模式；远程模式保留同等的数据来源、精度和交付约束，不依赖平台 tools 模块。
 
 1. 确保有本次 analyze_table 返回的有效 result_id，记录来源、指标、分组和过滤口径。
 2. 选择图表：类别对比用 bar，按 ISO 日期分组后的趋势用 line，两个数值维度用 scatter。

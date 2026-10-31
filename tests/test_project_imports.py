@@ -17,6 +17,7 @@ class ProjectImportTests(unittest.TestCase):
             "tests/verify_development_tools.py",
             "tests/verify_daytona.py",
             "scripts/devmate_with_mw.py",
+            "scripts/verify_web_team.py",
             "tests/verify_env.py",
         ]
         env = os.environ | {

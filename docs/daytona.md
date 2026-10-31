@@ -10,9 +10,9 @@ uv sync --locked --all-extras
 uv run --extra daytona python -m scripts.devmate_with_mw --thread-id issue-001 --task "检查项目并总结，不修改文件"
 ```
 
-同一 user-id/thread-id 复用远程文件；首次上传目录由 manager.py 的 SOURCE_DIRS/EXTRA_FILES 声明。
-每次取得环境后 `uv sync --locked --extra daytona`，修复缺失的虚拟环境并同步远程依赖声明。
-不自动同步后续本地源码修改，以免覆盖远程工作成果。不会自动下载产物，删除前应先导出。
+同一 user-id/thread-id 复用远程工作区。默认只建立空 Web 工作目录，不上传平台仓库。
+任务通过 agent.dispatcher.run_task 执行，每轮结束保存到服务器磁盘，SQLite 保存有效版本路径。
+沙箱已删除时从备份恢复，依赖按目标项目锁文件安装。完整流程与限制见 [工作区持久保存](workspace-persistence.md)。
 当前主 Agent 启用 task 委派，主子代理共享远程 backend。主代理不直接挂载表格工具；`run_pytest` 只留在显式本地验证入口。
 
 ## 管理函数与运行位置
@@ -21,10 +21,10 @@ uv run --extra daytona python -m scripts.devmate_with_mw --thread-id issue-001 -
 - `seed_project_into_sandbox`：查询真实工作目录，创建父目录、检查上传结果、同步依赖。
 - `get_or_create_sandbox_backend`：获取四元组，只保护准备阶段；实际任务使用下一个上下文。
 - `sandbox_for_thread`：锁覆盖准备、构建和整个 Agent 调用，最后更新空闲时间。
-- `cleanup_idle_sandboxes`：尝试获取同会话锁，活跃会话跳过；删除确认后才清除映射。
+- `cleanup_idle_sandboxes`：尝试获取同会话锁，活跃会话跳过；先保存后删除，保留会话和磁盘版本关联。
 
-模型、搜索请求、LangSmith 上传和管理 SDK 在本机运行；文件操作和 execute 在远程沙箱运行。
-聊天 checkpoint 仍是图实例内存，不随 SQLite 沙箱映射恢复；跨进程只保留远程文件。
+模型、搜索请求、LangSmith 上传和管理 SDK 在本机运行；任务文件操作和 execute 在远程沙箱运行，/guidance/ 文件读取在服务器。
+聊天 checkpoint 仍是图实例内存，不随 SQLite 沙箱映射恢复；跨进程保留远程文件和已保存的本地工作区版本。
 SQLite 在 `.sandbox-state/`，请勿随意删除。标签辅助找回创建请求中断后未登记 ID 的资源。
 不同用户必须由可信调用方提供身份；CLI 的 user-id 是本地开发标识，不是鉴权系统。
 
@@ -32,6 +32,7 @@ SQLite 在 `.sandbox-state/`，请勿随意删除。标签辅助找回创建请�
 
 | 本机环境变量 | 默认 | 含义 |
 | --- | --- | --- |
+| SYC_SANDBOX_SEED_PLATFORM | false | 仅旧平台自测显式上传平台源码 |
 | DAYTONA_API_URL | https://app.daytona.io/api | SDK 管理端点 |
 | SYC_SANDBOX_IDLE_SECONDS | 3600 | 任务结束后空闲多少秒允许回收 |
 | SYC_SANDBOX_CLEANUP_SECONDS | 60 | 应用回收扫描间隔 |
@@ -54,7 +55,7 @@ uv run --extra daytona python -m scripts.sandbox_cleanup --watch
 
 ## 密钥与边界
 
-不上传 `.env*`、`.git`、`.venv`、日志和凭据文件。允许 `.agents/skills`，限制文件类型、大小和总量。
+默认不上传平台源码或指导文件。下面的源码上传检查仅适用于显式 SYC_SANDBOX_SEED_PLATFORM=true 的平台自测。
 上传前检测本机已配置的凭据值以及常见 API Key/私钥格式，错误只说明类别，不打印秘密。
 只向沙箱注入 APP_ENV=test、PYTHONUNBUFFERED=1。自定义镜像和任务文本也不应包含密钥。
 扫描不是秘密识别的绝对保证，未知格式、编码后的秘密仍需人工审核上传清单。
@@ -76,8 +77,8 @@ uv run --extra daytona python -m scripts.sandbox_cleanup --watch
 可通过 subagent_models 按角色注入模型，通过 max_subagent_model_calls 设置子代理上限。
 
 - planner / researcher / reviewer / general-purpose：只读文件工具，无 execute、write_file、edit_file。
-- coder / tester：远程文件工具与 execute，tester 在沙箱虚拟环境运行 pytest。
-- data_analyst：远程文件工具与 execute，专属分析技能指导在同一个远程 Python 进程调用现有表格库。
+- coder / tester：远程文件工具与 execute，tester 依据用户项目配置运行测试与构建。
+- data_analyst：远程文件工具与 execute，专属分析技能指导远程 Python 计算，不假设平台工具库存在。
 - reviewer：通过 ReviewResult 返回结构化审查结果。
 
 开发默认顺序 coder → tester → reviewer，由 AGENTS.md 指导主代理按证据选择下一次 task；
@@ -86,8 +87,7 @@ uv run --extra daytona python -m scripts.sandbox_cleanup --watch
 外部会话锁仍覆盖整个主子代理执行期；图内部 task 另由异步锁串行化，普通工具不受这把锁保护。
 角色工具白名单不是同一沙箱内的 OS 权限隔离，execute 可运行任意受授权项目代码。
 
-已有沙箱不会自动覆盖源码、规则和技能。要使用本次新规则，建议以新的 thread-id 创建会话；
-若继续旧会话，需要显式更新其远程 AGENTS.md、skills 和所需源码。聊天 checkpoint 仍在内存中。
+已有沙箱不会被宿主源码覆盖。规则与技能由服务器 /guidance/ 只读路由加载，新建 Agent 使用当前内容版本；不需要修改沙箱中的规则文件。聊天 checkpoint 仍在内存中。
 上传清单不包含 data/inputs/；远程分析前需另行准备经过授权的输入文件。
 
 DeepSeek 官方接口的思考模式不接受 ToolStrategy 的强制工具选择。

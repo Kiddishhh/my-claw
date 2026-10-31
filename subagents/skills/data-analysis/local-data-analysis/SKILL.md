@@ -8,10 +8,9 @@ description: 分析本地 Excel/XLSX 或 CSV 表格，检查数据质量、明�
 ## 根据运行环境选择调用方式
 
 - 本地模式：直接调用已注册的 inspect_table/analyze_table 等工具。
-- Daytona 模式：通过 execute 在远程工作目录运行 Python 脚本；使用 `python -m uv run --locked --extra daytona python 脚本绝对路径`。
-- 远程脚本导入 `from tools.data_tools import create_data_tools`，以 `Path(远程项目根目录)` 创建工具字典。
-  在同一个 Python 进程、同一组工具实例中依次执行检查、计算、绘图和导出；dataset_id/result_id 对应内存存储，不跨命令复用。
-- 所有表格计算仍由该库完成，不凭模型估算。只打印摘要与产物路径，不打印全表。
+- Daytona 模式：通过 execute 运行独立 Python 分析脚本，使用 pandas/openpyxl/matplotlib 等任务依赖，缺失时按需安装。
+- 沙箱默认不包含平台 tools 模块。后文的 inspect_table/analyze_table 参数示例仅用于本地工具模式；远程脚本实现相同的检查和计算口径，不伪造工具 ID。
+- 数值必须由代码实际计算，不凭模型估算。只打印摘要与产物路径，不打印全表。
 - 输入必须已经存在于远程 data/inputs/；未上传时报告缺少输入，不读取宿主文件。
 
 ## 数据与工具边界

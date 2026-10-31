@@ -33,7 +33,9 @@ def test_remote_agent_registers_delegation_without_local_pytest(tmp_path):
     result = asyncio.run(agent.ainvoke({"messages": [{"role": "user", "content": "run"}]}, {"configurable": {"thread_id": "remote"}}))
     assert {"execute", "web_search", "fetch_url", "read_file", "task"} <= model.names
     assert not {"run_pytest", "inspect_table"} & model.names
-    assert "REMOTE_RULE_SENTINEL" in str(model.seen_messages[0][0].content)
+    assert "REMOTE_RULE_SENTINEL" not in str(model.seen_messages[0][0].content)
+    assert "通用开发 Agent 工作约定" in str(model.seen_messages[0][0].content)
+    assert "先阅读 AGENTS.md" not in str(model.seen_messages[0][0].content)
     assert any(isinstance(m, ToolMessage) and "REMOTE_EXECUTED" in str(m.content) for m in result["messages"])
 
 
@@ -71,8 +73,8 @@ def test_remote_development_delegation_shares_files_and_role_components(tmp_path
     assert json.loads(returned[-1].content) == verdict
     assert "VALUE = 42" in str(children["tester"].seen_messages[-1])
     for model in children.values():
-        assert "REMOTE_RULE_SENTINEL" in str(model.seen_messages[0])
-        assert "remote-development-skill" in str(model.seen_messages[0])
+        assert "通用开发 Agent 工作约定" in str(model.seen_messages[0])
+        assert "my-claw-code-quality" in str(model.seen_messages[0])
         assert not {"run_pytest", "task", "inspect_table"} & model.names
     assert {"write_file", "execute"} <= children["tester"].names
     assert not {"write_file", "edit_file", "execute"} & children["reviewer"].names
@@ -82,7 +84,9 @@ def test_remote_development_delegation_shares_files_and_role_components(tmp_path
 def test_remote_roles_share_backend_and_have_independent_limits(tmp_path):
     from subagents.profiles import build_remote_subagents
     from langchain.agents.middleware import ModelCallLimitMiddleware
-    backend = TestSandbox(root_dir=tmp_path)
+    from agent.guidance import guidance_backend
+    from agent.main import PROJECT_ROOT
+    backend = guidance_backend(TestSandbox(root_dir=tmp_path), PROJECT_ROOT)
     roles = {s["name"]: s for s in build_remote_subagents(backend, "/workspace", max_model_calls=3)}
     assert set(roles) == {"planner", "researcher", "coder", "tester", "reviewer", "data_analyst", "general-purpose"}
     for name, spec in roles.items():
@@ -93,7 +97,7 @@ def test_remote_roles_share_backend_and_have_independent_limits(tmp_path):
             assert not names & {"execute", "write_file", "edit_file"}
         else:
             assert "execute" in names
-        assert all(path.startswith("/workspace/") for path in spec["skills"])
+        assert all(path.startswith("/guidance/") for path in spec["skills"])
         assert any(isinstance(m, ModelCallLimitMiddleware) for m in spec["middleware"])
     assert roles["data_analyst"]["skills"] != roles["coder"]["skills"]
     with pytest.raises(ValueError):
@@ -108,6 +112,24 @@ def test_remote_allows_independent_readonly_delegation(tmp_path):
     agent = build_agent(backend=TestSandbox(root_dir=tmp_path), workdir="/workspace", model=parent, subagent_models=children)
     result = asyncio.run(agent.ainvoke({"messages": [{"role": "user", "content": "Research"}]}, {"configurable": {"thread_id": "parallel"}}))
     assert len([m for m in result["messages"] if isinstance(m, ToolMessage) and m.status == "success"]) == 2
+
+
+def test_remote_default_budget_allows_longer_delegate(tmp_path):
+    """读文件等准备工作超过原来的 12 次后，仍能正常结束委派。"""
+    child = CapturingModel(replies=[
+        *[call("execute", {"command": "echo inspect"}) for _ in range(13)],
+        AIMessage(content="Inspection complete"),
+    ])
+    parent = CapturingModel(replies=[
+        call("task", {"subagent_type": "coder", "description": "Inspect code"}),
+        AIMessage(content="done"),
+    ])
+    agent = build_agent(backend=TestSandbox(root_dir=tmp_path), workdir="/workspace", model=parent,
+                        subagent_models={"coder": child})
+    result = asyncio.run(agent.ainvoke({"messages": [{"role": "user", "content": "Inspect"}]},
+                                      {"configurable": {"thread_id": "long-delegate"}}))
+    assert len(child.seen_messages) == 14
+    assert result["messages"][-1].content == "done"
 
 
 def test_remote_child_model_limit_stops_runaway_delegate(tmp_path):
@@ -132,23 +154,23 @@ def test_remote_analyst_discovers_only_analysis_skills(tmp_path):
     parent = CapturingModel(replies=[call("task", {"subagent_type": "data_analyst", "description": "Inspect available skills"}), AIMessage(content="done")])
     agent = build_agent(backend=TestSandbox(root_dir=tmp_path), workdir="/workspace", model=parent, subagent_models={"data_analyst": child})
     asyncio.run(agent.ainvoke({"messages": [{"role": "user", "content": "Analyze"}]}, {"configurable": {"thread_id": "analysis"}}))
-    assert "remote-analysis-skill" in str(child.seen_messages[0])
-    assert "REMOTE_ANALYSIS_RULE" in str(child.seen_messages[0])
+    assert "local-data-analysis" in str(child.seen_messages[0])
+    assert "REMOTE_ANALYSIS_RULE" not in str(child.seen_messages[0])
     assert "execute" in child.names and "inspect_table" not in child.names
 
 
 def test_deepseek_review_model_disables_thinking_without_mutating_parent():
     from langchain_openai import ChatOpenAI
-    from subagents.profiles import _review_model
+    from infra.model_policy import model_for_role
     parent = ChatOpenAI(model="deepseek-flash", api_key="test-placeholder",
                         base_url="https://api.deepseek.com", extra_body={"custom": "kept"})
-    reviewer = _review_model(parent)
+    reviewer = model_for_role(parent, "reviewer")
     assert reviewer is not parent
     assert reviewer.extra_body == {"custom": "kept", "thinking": {"type": "disabled"}}
     assert parent.extra_body == {"custom": "kept"}
     assert reviewer.reasoning_effort is None
     other = ChatOpenAI(model="another-model", api_key="test-placeholder", base_url="https://example.com/v1")
-    assert _review_model(other) is other
+    assert model_for_role(other, "reviewer") is other
 
 
 def test_registered_middleware_serializes_same_turn_delegations(tmp_path):
@@ -173,3 +195,23 @@ def test_registered_middleware_serializes_same_turn_delegations(tmp_path):
     result = asyncio.run(agent.ainvoke({"messages": [{"role": "user", "content": "Inspect"}]}, {"configurable": {"thread_id": "serialized"}}))
     assert peak == 1 and active == 0
     assert len([m for m in result["messages"] if isinstance(m, ToolMessage)]) == 2
+
+
+def test_guidance_is_readable_but_not_writable_by_parent_or_child(tmp_path):
+    child = CapturingModel(replies=[call("edit_file", {
+        "file_path": "/guidance/AGENTS.md", "old_string": "通用开发", "new_string": "evil",
+    }), AIMessage(content="done")])
+    parent = CapturingModel(replies=[
+        call("read_file", {"file_path": "/guidance/AGENTS.md"}),
+        call("write_file", {"file_path": "/guidance/injected.md", "content": "bad"}, "write"),
+        call("task", {"subagent_type": "coder", "description": "test"}, "delegate"),
+        AIMessage(content="done"),
+    ])
+    agent = build_agent(backend=TestSandbox(root_dir=tmp_path), workdir="/workspace",
+                        model=parent, subagent_models={"coder": child})
+    result = asyncio.run(agent.ainvoke({"messages": [{"role": "user", "content": "test"}]},
+                                      {"configurable": {"thread_id": "readonly-guidance"}}))
+    messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert "通用开发 Agent 工作约定" in str(messages[0].content)
+    assert "denied" in str(messages[1].content)
+    assert "denied" in str(child.seen_messages[-1])

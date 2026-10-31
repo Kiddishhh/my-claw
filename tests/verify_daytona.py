@@ -15,6 +15,7 @@ from scripts._verification import VerificationTrace
 from scripts._analysis_verification import SALES_CSV, analysis_task
 
 from agent.main import PROJECT_ROOT, build_agent, build_model
+from infra.agent_limits import DEFAULT_MODEL_CALLS, DEFAULT_SUBAGENT_MODEL_CALLS, DEFAULT_RECURSION_LIMIT
 from infra.settings import SandboxSettings, load_langsmith_environment
 from sandbox.manager import (
     _session_key, _sql, create_daytona_client,
@@ -26,12 +27,12 @@ def main() -> None:
     """生成唯一会话并验证；失败也尝试删除，删除失败保留映射供回收。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=["development", "analysis"], default="development")
-    parser.add_argument("--max-subagent-model-calls", type=int, default=16, help="每次子代理委派的模型调用上限")
+    parser.add_argument("--max-subagent-model-calls", type=int, default=DEFAULT_SUBAGENT_MODEL_CALLS, help="每次子代理委派的模型调用上限")
     args = parser.parse_args()
     if args.max_subagent_model_calls <= 0:
         parser.error("--max-subagent-model-calls 必须为正整数")
     load_langsmith_environment()
-    settings = SandboxSettings()
+    settings = SandboxSettings(syc_sandbox_seed_platform=True)
     client = create_daytona_client(settings)
     thread_id = f"verification-{uuid.uuid4().hex}"
     key = _session_key("verification", thread_id)
@@ -53,7 +54,7 @@ def main() -> None:
             )
             result = backend.execute("python -c " + shlex.quote(probe))
             checks["host_keys_absent"] = result.exit_code == 0 and "KEYS_ABSENT" in result.output
-            agent = build_agent(backend=backend, workdir=workdir, model=build_model(), max_model_calls=12, max_subagent_model_calls=args.max_subagent_model_calls)
+            agent = build_agent(backend=backend, workdir=workdir, model=build_model(), max_model_calls=DEFAULT_MODEL_CALLS, max_subagent_model_calls=args.max_subagent_model_calls)
             code = (
                 "from decimal import Decimal; from pathlib import Path; "
                 "assert Decimal('0.1') + Decimal('0.2') == Decimal('0.3'); "
@@ -83,7 +84,7 @@ def main() -> None:
             async def run() -> dict:
                 return await asyncio.wait_for(agent.ainvoke(
                     {"messages": [{"role": "user", "content": task}]},
-                    config={"run_name": "daytona-verification", "recursion_limit": 100,
+                    config={"run_name": "daytona-verification", "recursion_limit": DEFAULT_RECURSION_LIMIT,
                             "callbacks": [trace], "configurable": {"thread_id": thread_id}, "metadata": {"sandbox_id": sandbox.id}},
                 ), timeout=480)
 

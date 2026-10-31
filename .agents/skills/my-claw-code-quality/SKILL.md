@@ -5,7 +5,7 @@ description: Use when implementing, fixing, refactoring, or reviewing Python cod
 
 # my-claw 代码规范与 Review
 
-先读取仓库根目录的 [AGENTS.md](../../../AGENTS.md)，公共规范以该文件为准。
+遵循已注入的 AGENTS.md；仅当上下文缺失该规则时读取仓库规则文件，不重复读取已加载内容。
 本技能提供任务执行和审查方法，不授予模型调用、外部发布或数据删除权限。
 
 ## 选择模式

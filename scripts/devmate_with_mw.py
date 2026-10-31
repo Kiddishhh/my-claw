@@ -4,7 +4,8 @@ import asyncio
 from pathlib import Path
 import threading
 
-from agent.main import PROJECT_ROOT, build_agent, build_model
+from agent.main import PROJECT_ROOT, build_model
+from agent.dispatcher import run_task
 from infra.logging import get_logger
 from infra.settings import SandboxSettings, load_langsmith_environment
 from sandbox.manager import cleanup_idle_sandboxes, create_daytona_client, sandbox_for_thread
@@ -42,29 +43,14 @@ def main() -> None:
     worker = threading.Thread(target=sweep, name="sandbox-cleanup", daemon=True)
     worker.start()
     try:
-        # 同步 SDK 在事件循环之外执行；锁覆盖准备和整个异步 Agent 调用。
-        with sandbox_for_thread(args.user_id, args.thread_id, args.project_root,
-                                settings=settings, client=client) as resources:
-            backend, sandbox, _, workdir = resources
-            agent = build_agent(backend=backend, workdir=workdir, user_id=args.user_id, model=model)
-            config = {
-                "run_name": "daytona-development", "recursion_limit": 150,
-                "configurable": {"thread_id": args.thread_id},
-                "metadata": {"sandbox_id": sandbox.id},
-            }
+        result = asyncio.run(run_task(
+            args.thread_id, args.task, user_id=args.user_id,
+            project_root=args.project_root, settings=settings, client=client, model=model,
+        ))
+        print(result["reply"])
+        logger.info("工作区保存：saved={} path={} error={}",
+                    result["workspace_saved"], result["workspace_path"], result["backup_error"])
 
-            async def run() -> None:
-                # 超时沿上下文抛出，由 manager 尝试停止远程沙箱。
-                result = await asyncio.wait_for(agent.ainvoke(
-                    {"messages": [{"role": "user", "content": args.task}]}, config,
-                ), timeout=settings.syc_sandbox_task_timeout)
-                print(result["messages"][-1].content)
-                # 私有计量字段从 checkpoint 读取；新建图不恢复上一轮聊天历史。
-                state = (await agent.aget_state(config)).values
-                logger.info("主代理累计 token（不含子代理）：input={} output={}",
-                            state.get("total_input_tokens", 0), state.get("total_output_tokens", 0))
-
-            asyncio.run(run())
     finally:
         stop.set()
         worker.join(timeout=5)

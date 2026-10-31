@@ -12,10 +12,34 @@ uv run --extra daytona python -m scripts.sandbox_cleanup --watch
 ```
 
 本地验收脚本显式使用 `build_local_agent()`，不会创建云端资源。
-默认远程模式注册搜索/网页和 task 委派，主子代理文件与命令统一由 Daytona 提供。
+默认远程模式注册搜索/网页和 task 委派，主子代理工作文件与命令由 Daytona 提供，规则和技能通过 /guidance/ 读取服务器只读版本。
 开发任务按 AGENTS.md 指导推进 coder → tester → reviewer；多个 task 由中间件排队执行，角色顺序仍由主 Agent 决策。
 远程组件与角色工具边界见 [Daytona 使用说明](docs/daytona.md)。
 
+
+默认不上传平台仓库；统一调用入口为 `agent.dispatcher.run_task`。任务结束保存工作文件，沙箱删除后可从磁盘恢复。详见 [工作区持久保存](docs/workspace-persistence.md)。对话持久化和前端接口本阶段未实现。
+
+### Web 团队端到端验收
+
+```powershell
+uv run --extra daytona python -m scripts.verify_web_team
+```
+
+直接运行会调用真实模型并创建临时 Daytona。固定需求为零第三方依赖的商品展示页，
+检查 coder → tester → reviewer、规则和技能、真实 Node 测试/构建、磁盘源码哈希（不保存构建输出），
+随后删除沙箱，同线程从磁盘恢复，再次测试与构建。最后只清理本次临时云端资源。
+它通过正式 dispatcher 执行，不上传平台源码，不在宿主运行生成的项目。
+
+默认主代理最多 6 次模型调用，每次子代理最多 10 次，Agent 阶段超时 480 秒；
+参数为 `--max-model-calls`、`--max-subagent-calls`、`--timeout`，准备和传输不计入该超时。
+默认主代理 30 次、每次子代理委派 40 次模型调用，集中定义于 `infra/agent_limits.py`；
+dispatcher 图步数上限 1000（包括中间件节点，不等于模型调用次数）。超限仍报错并尽力保存源码。
+普通 dispatcher 任务超时默认 600 秒，可通过 `SYC_SANDBOX_TASK_TIMEOUT` 配置；
+Web 验收脚本用 `--timeout` 覆盖该值，默认仍为 480 秒。
+每次仅尝试一次，避免无意重复消费。日志输出调用摘要和脱敏异常，不展开完整模型内容。
+记录位于 `logs/web-team-verification/<线程>/`：`events.jsonl`、`report.json`，
+该目录内 `.sandbox-state/workspaces/` 保留磁盘项目。清理失败也会写报告并返回非零退出码。
+不属于浏览器视觉/交互验收，也不验证聊天持久化。`--help` 不调用模型或创建沙箱。
 
 ## 当前目录与入口
 
@@ -31,7 +55,7 @@ uv run --extra daytona python -m scripts.sandbox_cleanup --watch
 旧 TODO 普通/流式演示已删除。日常使用 `scripts.devmate_with_mw`；
 远程真实验收使用 `tests.verify_daytona`；本地文件通路和开发工具验收分别使用
 `tests.verify_agent`、`tests.verify_development_tools`。后三者不会被 pytest 自动运行。
-`.venv/` 是唯一项目虚拟环境；`.sandbox-state/` 保存沙箱映射，`logs/` 保存运行与验收记录。
+`.venv/` 是唯一项目虚拟环境；`.sandbox-state/` 保存沙箱映射和项目文件备份，`logs/` 保存运行与验收记录。
 
 ## 保留的本地验证模式
 
@@ -284,6 +308,17 @@ data_analyst 通过表格工具写入限定的分析产物目录。所有角色�
 
 默认所有角色使用 `.env` 中配置的主模型，无需增加密钥或服务。可通过
 `build_local_agent(subagent_models={"reviewer": another_model})` 为角色传入独立模型对象。
-`max_model_calls` 仅限制主代理；`max_subagent_model_calls=12` 限制每次委派，超限报错，不是全局调用预算。
+`max_model_calls` 仅限制主代理；`max_subagent_model_calls=40` 限制每次委派，超限报错，不是全局调用预算。
 本地后端不提供 execute/shell；pytest 使用当前虚拟环境和当前 workspace_root，超时 120 秒。
 这些工具限制不构成操作系统沙箱，pytest 只能执行受信任项目的代码。
+
+## DeepSeek 角色思考策略
+
+`AGENTS.md` 是通用开发运行规则，不再包含平台维护或订单服务专属要求。
+Memory 已注入的规则不重复读取；Skills 仍按任务渐进式加载。
+
+策略集中在 `infra/model_policy.py` 的 `ROLE_REASONING`：主代理、researcher、tester、reviewer、general-purpose 关闭思考；planner、coder、data_analyst 启用 low 思考。
+官方 DeepSeek 端点自动使用 `langchain-deepseek` 适配器，保留已有 `SYC_MODEL_PROVIDER=openai` 配置；无需改密钥或 URL。
+兼容层补齐当前适配器的工具调用 reasoning_content 回传，终端不打印推理原文。
+其他供应商和离线模型不套用此策略。显式传入官方 DeepSeek 模型时，思考角色应使用 `DeepSeekChatModel`，避免 ChatOpenAI 丢失推理字段。
+这些设置在新建 Agent 时生效；low 思考仍会产生推理 Token，实际成本及质量需真实任务验证。

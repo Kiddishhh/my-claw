@@ -4,7 +4,8 @@
 不更新状态、不拦截——只观测。所以这里直接 return handler 的结果即可。
 """
 import time
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.messages import ToolMessage
@@ -22,14 +23,29 @@ class ToolAuditMiddleware(AgentMiddleware):
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], "Command | ToolMessage"],
+        handler: Callable[[ToolCallRequest], Awaitable[Command | ToolMessage]],
     ) -> "Command | ToolMessage":
         # 官方确认：request.tool_call 是 dict，用下标取 name/args
         tool_name = request.tool_call["name"]
 
         start = time.perf_counter()
         logger.info("🔧 调用工具：{}", tool_name)
-        result = await handler(request)        # 放行：真正执行这次工具调用
+        try:
+            result = await handler(request)
+        except asyncio.CancelledError:
+            logger.warning("工具取消：{}（{:.0f} ms）", tool_name, (time.perf_counter() - start) * 1000)
+            raise
+        except Exception as error:
+            # 不回显可能包含密钥/用户原文的异常消息，完整脱敏堆栈由验收回调处理。
+            logger.error("工具异常：{} type={}（{:.0f} ms）", tool_name, type(error).__name__, (time.perf_counter() - start) * 1000)
+            raise
         cost_ms = (time.perf_counter() - start) * 1000
-        logger.info("✅ 工具完成：{}（{:.0f} ms）", tool_name, cost_ms)
+        failed = getattr(result, "status", None) == "error"
+        if isinstance(result, Command) and isinstance(result.update, dict):
+            failed |= any(isinstance(m, ToolMessage) and m.status == "error"
+                          for m in result.update.get("messages", []))
+        if failed:
+            logger.warning("工具返回错误：{}（{:.0f} ms）", tool_name, cost_ms)
+        else:
+            logger.info("工具返回：{}（{:.0f} ms）；业务结果以退出码和验证证据为准", tool_name, cost_ms)
         return result

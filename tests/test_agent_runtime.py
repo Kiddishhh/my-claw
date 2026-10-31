@@ -65,7 +65,7 @@ class AgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             {"configurable": {"thread_id": "project-rules"}},
         )
         prompt = str(model.seen_messages[0][0].content)
-        self.assertIn("my-claw 项目协作约定", prompt)
+        self.assertIn("通用开发 Agent 工作约定", prompt)
         self.assertIn("my-claw-code-quality", prompt)
 
     async def test_model_limit_stops_loop_before_next_call(self) -> None:

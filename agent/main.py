@@ -4,6 +4,7 @@ agent/main.py —— 默认远程 Agent 构建；本地后端仅通过显式入�
 远程主子代理共享当前会话的 Daytona；显式本地验收直接访问项目目录，不提供 OS 隔离。
 """
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 import shlex
 
 from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
@@ -16,6 +17,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
 from infra.settings import get_settings, load_langsmith_environment
+from infra.agent_limits import DEFAULT_MODEL_CALLS, DEFAULT_SUBAGENT_MODEL_CALLS
+from infra.model_policy import DeepSeekChatModel, model_for_role
 from infra.logging import get_logger
 
 from middleware.audit import ToolAuditMiddleware
@@ -26,6 +29,7 @@ from middleware.single_agent import SingleAgentMiddleware
 from middleware.task_serialization import TaskSerializationMiddleware
 from tools.test_tools import create_test_tools
 from tools.search_tools import web_search, fetch_url
+from agent.guidance import guidance_backend, GUIDANCE_PERMISSIONS, MEMORY, DEV_SKILLS
 
 
 logger = get_logger()
@@ -36,7 +40,7 @@ MEMORY_SOURCES = ["/AGENTS.md"]
 
 # DevMate 的人设：只写"领域要求"，
 # "如何用 write_todos / 文件工具"这类通用本领由 DeepAgents 内置提示词负责。
-DEVMATE_SYSTEM_PROMPT = """你是 DevMate，一个严谨的研发助手，服务于一个 Python / FastAPI 订单微服务团队。
+DEVMATE_SYSTEM_PROMPT = """你是 DevMate，一个严谨的通用开发助手，按用户项目实际技术栈和规范工作。
 
 工作准则：
 - 复杂任务先列简短计划，依据实际可用工具完成任务。
@@ -51,6 +55,12 @@ DEVMATE_SYSTEM_PROMPT = """你是 DevMate，一个严谨的研发助手，服务
 def build_model() -> BaseChatModel:
     """按配置构建模型。"""
     s = get_settings()
+    # 保持 SYC_MODEL_PROVIDER=openai 的已有环境配置可用，官方端点选择专用适配器。
+    if s.model_provider in {"openai", "deepseek"} and urlsplit(s.base_url).hostname == "api.deepseek.com":
+        return model_for_role(DeepSeekChatModel(
+            model=s.model_name, api_key=s.api_key.get_secret_value(), base_url=s.base_url,
+            max_retries=s.max_retries, timeout=s.timeout,
+        ), "main")
     return init_chat_model(
         model=s.model_name,
         model_provider=s.model_provider,
@@ -71,7 +81,7 @@ def build_local_agent(
     workspace_root: Path | None = None,
     model: BaseChatModel | None = None,
     subagent_models: dict[str, BaseChatModel] | None = None,
-    max_subagent_model_calls: int = 12,
+    max_subagent_model_calls: int = DEFAULT_SUBAGENT_MODEL_CALLS,
     enable_subagents: bool = False,
 ) -> CompiledStateGraph:
     """构建本地文件 Agent，加载项目技能和规则。
@@ -108,7 +118,7 @@ def build_local_agent(
     else:
         middleware.append(SingleAgentMiddleware())
 
-    selected_model = model if model is not None else build_model()
+    selected_model = model_for_role(model if model is not None else build_model(), "main")
     agent = create_deep_agent(
         model=selected_model,
         # 本地入口直接组合开发工具；pytest 必须绑定本次工作区，不能复用全局实例。
@@ -132,14 +142,14 @@ def build_local_agent(
 def build_agent(
     *, backend: SandboxBackendProtocol, workdir: str,
     user_id: str = "anonymous", model: BaseChatModel | None = None,
-    max_model_calls: int = 12,
+    max_model_calls: int = DEFAULT_MODEL_CALLS,
     subagent_models: dict[str, BaseChatModel] | None = None,
-    max_subagent_model_calls: int = 12,
+    max_subagent_model_calls: int = DEFAULT_SUBAGENT_MODEL_CALLS,
 ) -> CompiledStateGraph:
     """按官方 backend= 接口绑定远程沙箱，不创建资源、不隐式回退本机。
 
     调用方负责准备沙箱并在整个 ainvoke 期间持有会话锁。
-    workdir 是远程 Linux 绝对路径，skills/memory 必须已预置到这个目录。
+    workdir 是远程 Linux 绝对路径；服务器规则通过只读指导路由加载。
     thread_id 与沙箱的关联由 sandbox.manager 管理，而不是由图自动推断。
     MemorySaver 仅用于同一图实例内会话，不等于持久化聊天历史。
     subagent_models 按角色覆盖模型；每次委派受 max_subagent_model_calls 限制。
@@ -155,7 +165,8 @@ def build_agent(
     workdir = str(path)
     # 独立构建与 CLI 一致；只加载环境，不手工绑定回调或覆盖已有 tracing 开关。
     load_langsmith_environment()
-    selected_model = model if model is not None else build_model()
+    selected_model = model_for_role(model if model is not None else build_model(), "main")
+    backend = guidance_backend(backend, PROJECT_ROOT)
     return create_deep_agent(
         model=selected_model,
         backend=backend,
@@ -164,8 +175,9 @@ def build_agent(
             backend, workdir, models=subagent_models, default_model=selected_model,
             max_model_calls=max_subagent_model_calls, user_id=user_id,
         ),
-        skills=[f"{workdir}/.agents/skills/"],
-        memory=[f"{workdir}/AGENTS.md"],
+        skills=DEV_SKILLS,
+        memory=MEMORY,
+        permissions=GUIDANCE_PERMISSIONS,
         middleware=[
             RequestContextMiddleware(user_id=user_id, channel="daytona"),
             TaskSerializationMiddleware(),
@@ -174,10 +186,11 @@ def build_agent(
         ],
         checkpointer=MemorySaver(),
         system_prompt=(
-            f"你是严谨的研发助手。项目在远程沙箱 {workdir}，使用该目录下的绝对路径。"
-            "先阅读 AGENTS.md 和相关开发技能，不把业务示例当成已有项目布局。"
+            f"你是严谨的 Web 开发助手。用户项目在远程沙箱 {workdir}，工作文件使用该目录下的绝对路径。"
+            "平台规则和技能在 /guidance/ 只读虚拟路径，通过 read_file 读取；不可用 execute 访问该路径。"
+            "遵循已注入的 AGENTS.md，无需重复读取；仅在任务匹配时读取相关 SKILL.md。"
             "所有代码和测试在远程 execute 中执行，不使用本机 run_pytest。"
-            f"测试命令：cd {shlex.quote(workdir)} && python -m uv run --locked --extra daytona python -m pytest tests -q。"
+            "依据项目 package.json 和锁文件选择安装、测试、构建命令；不要假设存在平台 Python 源码。"
             "通过 task 按需委派，开发任务遵循 AGENTS.md 的 coder → tester → reviewer 依赖规则。"
             "每轮至多两个独立只读委派、至多一个可能写入的委派；依赖上游结果时等待完成再决策。"
             "主代理不直接挂载本机表格工具，数据任务交 data_analyst 在远程执行。"

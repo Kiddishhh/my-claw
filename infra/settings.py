@@ -62,6 +62,8 @@ class SandboxSettings(BaseSettings):
     )
     daytona_api_key: SecretStr
     daytona_api_url: str = "https://app.daytona.io/api"
+    # 只用于旧的平台自身开发验收；正式 Web 会话默认空工作区，平台源码不上传。
+    syc_sandbox_seed_platform: bool = False
     syc_sandbox_idle_seconds: int = Field(default=3600, gt=0)
     syc_sandbox_cleanup_seconds: int = Field(default=60, ge=10)
     syc_sandbox_command_timeout: int = Field(default=300, gt=0)

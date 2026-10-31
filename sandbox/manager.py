@@ -22,6 +22,7 @@ from langchain_daytona import DaytonaSandbox
 
 from infra.logging import get_logger
 from infra.settings import SandboxSettings
+from sandbox.workspace import save_workspace, restore_workspace, prune_versions
 
 logger = get_logger()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -44,10 +45,36 @@ def _sql(root: Path, statement: str, parameters: tuple = ()) -> list[sqlite3.Row
     # sqlite 的连接上下文只提交/回滚事务，closing 才保证连接真正关闭。
     with closing(sqlite3.connect(directory / "sessions.sqlite3", timeout=30)) as db, db:
         db.row_factory = sqlite3.Row
+        # 多个会话首次启动也可能并发迁移，先取得写事务，避免重复 ALTER。
+        db.execute("BEGIN IMMEDIATE")
         db.execute("""CREATE TABLE IF NOT EXISTS sessions (
             session_key TEXT PRIMARY KEY, sandbox_id TEXT, workdir TEXT,
             status TEXT NOT NULL, last_used_at REAL NOT NULL)""")
+        # 原地、幂等迁移，保留旧沙箱映射；不读取或修改用户项目文件。
+        columns = {row[1] for row in db.execute("PRAGMA table_info(sessions)")}
+        for name, kind in (("snapshot_path", "TEXT"), ("saved_at", "REAL"),
+                           ("backup_status", "TEXT"), ("backup_error", "TEXT"),
+                           ("dependency_warning", "TEXT")):
+            if name not in columns:
+                db.execute(f"ALTER TABLE sessions ADD COLUMN {name} {kind}")
         return db.execute(statement, parameters).fetchall()
+
+
+def save_session_workspace(root: Path, key: str, backend: DaytonaSandbox, workdir: str) -> str:
+    """持锁调用：文件落盘后再更新 SQLite 指针；失败保留上一个完整版本。"""
+    try:
+        version = save_workspace(backend, workdir, root, key)
+        _sql(root, "UPDATE sessions SET snapshot_path=?,saved_at=?,backup_status='saved',backup_error=NULL WHERE session_key=?",
+             (version, time.time(), key))
+        try:
+            prune_versions(root, key, version)
+        except Exception as error:
+            logger.warning("旧备份清理失败，最新版本已安全保存：{}", type(error).__name__)
+        return version
+    except Exception as error:
+        _sql(root, "UPDATE sessions SET backup_status='failed',backup_error=? WHERE session_key=?",
+             (type(error).__name__, key))
+        raise
 
 
 def _lock(root: Path, key: str, timeout: float = 30) -> FileLock:
@@ -132,16 +159,25 @@ def _execute(backend: DaytonaSandbox, command: str) -> None:
         raise RuntimeError(f"远程初始化命令失败，exit_code={result.exit_code}")
 
 
-def _sync_dependencies(backend: DaytonaSandbox, workdir: str) -> None:
+def _sync_dependencies(backend: DaytonaSandbox, workdir: str) -> str | None:
+    """首次准备/恢复时尝试安装；项目安装失败是可修复诊断，不阻断 Agent。
+
+只返回退出码，不将可能包含凭据的安装输出写入数据库或提示词。
+连接异常仍向外抛出，避免将不可访问的沙箱标记为可用。
+"""
     quoted = shlex.quote(workdir)
-    # 不依据指纹跳过：uv 会快速复用已安装包，同时修复被删除的 .venv。
-    # 安装不传递本机 pip/uv 配置或索引密码。正式部署建议把 uv 预装到镜像。
-    _execute(backend, "python -m uv --version >/dev/null 2>&1 || python -m pip install --user uv")
-    _execute(backend, f"cd {quoted} && python -m uv sync --locked --extra daytona && python -m uv run --locked --extra daytona python -c 'import sys; print(sys.version)' ")
+    result = backend.execute(f"cd {quoted} && if [ -f package-lock.json ]; then npm ci; "
+             "elif [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile; "
+             "elif [ -f yarn.lock ]; then corepack yarn install --immutable; "
+             "elif [ -f package.json ]; then npm install; "
+             "elif [ -f uv.lock ]; then python -m uv sync --locked; fi")
+    if result.exit_code != 0:
+        return f"上次准备工作区时依赖安装失败，exit_code={result.exit_code}。文件可访问；请检查项目依赖与锁文件，按需修复后验证构建。当前依赖状态需重新核实。"
+    return None
 
 
 def seed_project_into_sandbox(backend: DaytonaSandbox, sandbox: Sandbox, root: Path) -> str:
-    """首次上传和安装，成功才返回远程工作目录；不使用猜测的兜底路径。"""
+    """显式平台自测首次上传；调用方另行尝试安装，不把安装失败当成文件不可用。"""
     base = PurePosixPath(sandbox.get_work_dir())
     if not base.is_absolute() or ".." in base.parts:
         raise ValueError("沙箱未返回有效工作目录")
@@ -152,7 +188,6 @@ def seed_project_into_sandbox(backend: DaytonaSandbox, sandbox: Sandbox, root: P
     results = backend.upload_files(files)
     if len(results) != len(files) or any(item.error for item in results):
         raise RuntimeError("沙箱文件上传未全部成功")
-    _sync_dependencies(backend, workdir)
     logger.info("沙箱初始化完成：上传 {} 个文件", len(files))
     return workdir
 
@@ -167,28 +202,36 @@ def _get_or_create_locked(
 ) -> tuple[DaytonaSandbox, Sandbox, Daytona, str]:
     key = _session_key(user_id, thread_id)
     rows = _sql(root, "SELECT * FROM sessions WHERE session_key=?", (key,))
-    if rows:
+    snapshot = rows[0]["snapshot_path"] if rows else None
+    if rows and rows[0]["status"] == "archived" and not snapshot:
+        raise RuntimeError("原沙箱已回收但没有有效备份，需要人工处理，不能创建空项目冒充恢复")
+    if rows and rows[0]["status"] != "archived":
         row = rows[0]
         if row["status"] != "ready":
             raise RuntimeError("此会话初始化未完成或等待回收，请先运行回收程序；不会自动创建重复沙箱")
         try:
             sandbox = client.get(row["sandbox_id"])
         except DaytonaNotFoundError:
-            raise RuntimeError("原会话沙箱已删除，原文件不可恢复；请使用新 thread_id 或清理旧映射") from None
-        state = getattr(sandbox.state, "value", sandbox.state)
-        if state == "stopped":
-            sandbox.start(timeout=120)
-        elif state != "started":
-            raise RuntimeError(f"沙箱暂不可复用：{state}")
-        backend = backend_factory(sandbox=sandbox, timeout=settings.syc_sandbox_command_timeout)
-        _sync_dependencies(backend, row["workdir"])
-        logger.info("复用会话沙箱：{}", sandbox.id)
-        return backend, sandbox, client, row["workdir"]
+            if not snapshot:
+                raise RuntimeError("原沙箱已删除且没有有效磁盘备份，不能自动恢复") from None
+            _sql(root, "UPDATE sessions SET sandbox_id=NULL,status='archived' WHERE session_key=?", (key,))
+        else:
+            state = getattr(sandbox.state, "value", sandbox.state)
+            if state == "stopped":
+                sandbox.start(timeout=120)
+            elif state != "started":
+                raise RuntimeError(f"沙箱暂不可复用：{state}")
+            backend = backend_factory(sandbox=sandbox, timeout=settings.syc_sandbox_command_timeout)
+            # 不把依赖正确作为允许进入 Agent 的前提；也不每轮重装 node_modules。
+            logger.info("复用会话沙箱：{}", sandbox.id)
+            return backend, sandbox, client, row["workdir"]
 
     # 创建之前验证全部文件，避免密钥检查失败后仍产生云端资源。
-    _collect_project_files(root, "/preflight")
+    if settings.syc_sandbox_seed_platform and not snapshot:
+        _collect_project_files(root, "/preflight")
     # 先写 initializing：即使 create 请求超时但云端已创建，下次也不会盲目再建。
-    _sql(root, "INSERT INTO sessions VALUES(?,NULL,NULL,'initializing',?)", (key, time.time()))
+    _sql(root, "INSERT INTO sessions(session_key,status,last_used_at) VALUES(?,'initializing',?) "
+         "ON CONFLICT(session_key) DO UPDATE SET status='initializing',workdir=NULL,last_used_at=excluded.last_used_at", (key, time.time()))
     sandbox = None
     try:
         # SDK 0.227 使用 ListSandboxesQuery，而不是旧示例的 list(labels=...)。
@@ -203,7 +246,23 @@ def _get_or_create_locked(
         ), timeout=120)
         _sql(root, "UPDATE sessions SET sandbox_id=? WHERE session_key=?", (sandbox.id, key))
         backend = backend_factory(sandbox=sandbox, timeout=settings.syc_sandbox_command_timeout)
-        workdir = seed_project_into_sandbox(backend, sandbox, root)
+        if settings.syc_sandbox_seed_platform and not snapshot:
+            # 仅保留显式开发验收兼容入口；默认不向沙箱上传平台仓库。
+            workdir = seed_project_into_sandbox(backend, sandbox, root)
+        else:
+            base = PurePosixPath(sandbox.get_work_dir())
+            if not base.is_absolute() or ".." in base.parts:
+                raise ValueError("无效沙箱工作目录")
+            workdir = str(base / "workspace")
+            _execute(backend, f"mkdir -p {shlex.quote(workdir)}")
+            if snapshot:
+                restore_workspace(backend, workdir, root, snapshot)
+            # 使用具备 Node/Python 的 Daytona 镜像；缺失解释器时明确失败。
+            _execute(backend, "node --version && npm --version && python --version")
+        warning = _sync_dependencies(backend, workdir)
+        _sql(root, "UPDATE sessions SET dependency_warning=? WHERE session_key=?", (warning, key))
+        if warning:
+            logger.warning("项目依赖未准备好，交由 Agent 修复；沙箱保持可访问")
         _sql(root, "UPDATE sessions SET workdir=?,status='ready',last_used_at=? WHERE session_key=?", (workdir, time.time(), key))
         return backend, sandbox, client, workdir
     except Exception:
@@ -211,7 +270,10 @@ def _get_or_create_locked(
         if sandbox is not None:
             try:
                 client.delete(sandbox, wait=True, timeout=120)
-                _sql(root, "DELETE FROM sessions WHERE session_key=?", (key,))
+                if snapshot:
+                    _sql(root, "UPDATE sessions SET sandbox_id=NULL,status='archived' WHERE session_key=?", (key,))
+                else:
+                    _sql(root, "DELETE FROM sessions WHERE session_key=?", (key,))
             except Exception as cleanup_error:
                 logger.error("初始化失败且清理待重试：sandbox={} error={}", sandbox.id, type(cleanup_error).__name__)
         raise
@@ -266,7 +328,7 @@ def sandbox_for_thread(
 
 def cleanup_idle_sandboxes(
     project_root: Path | None = None, *, settings: SandboxSettings | None = None,
-    client: Daytona | None = None,
+    client: Daytona | None = None, backend_factory: Callable[..., DaytonaSandbox] = DaytonaSandbox,
 ) -> dict[str, int]:
     """周期任务调用：跳过持锁会话，失败保留记录；云端 404 视为已删除。"""
     root = (project_root or PROJECT_ROOT).resolve()
@@ -274,7 +336,7 @@ def cleanup_idle_sandboxes(
     client = client or create_daytona_client(settings)
     counts = {"deleted": 0, "busy": 0, "failed": 0}
     cutoff = time.time() - settings.syc_sandbox_idle_seconds
-    rows = _sql(root, "SELECT * FROM sessions WHERE last_used_at<? OR status!='ready'", (cutoff,))
+    rows = _sql(root, "SELECT * FROM sessions WHERE status!='archived' AND (last_used_at<? OR status!='ready')", (cutoff,))
     for row in rows:
         key = row["session_key"]
         try:
@@ -283,6 +345,8 @@ def cleanup_idle_sandboxes(
                 if not current:
                     continue
                 item = current[0]
+                if item["status"] == "archived":
+                    continue
                 if item["status"] == "ready" and item["last_used_at"] >= cutoff:
                     continue
                 if item["sandbox_id"]:
@@ -297,11 +361,24 @@ def cleanup_idle_sandboxes(
                         # 创建请求可能仍在服务端执行，保留记录，下一轮继续观察。
                         continue
                 for sandbox in matches:
+                    if item["workdir"]:
+                        # 回收前必须有最新有效备份；停止的沙箱先启动才能下载。
+                        state = getattr(sandbox.state, "value", sandbox.state)
+                        if state == "stopped":
+                            sandbox.start(timeout=120)
+                        elif state != "started":
+                            raise RuntimeError("沙箱状态不支持安全备份，暂不删除")
+                        backend = backend_factory(sandbox=sandbox, timeout=settings.syc_sandbox_command_timeout)
+                        save_session_workspace(root, key, backend, item["workdir"])
                     try:
                         client.delete(sandbox, wait=True, timeout=120)
                     except DaytonaNotFoundError:
                         pass
-                _sql(root, "DELETE FROM sessions WHERE session_key=?", (key,))
+                # 初始化失败、尚无工作目录的资源可移除；已使用会话永远保留恢复关联。
+                if item["workdir"] or item["snapshot_path"]:
+                    _sql(root, "UPDATE sessions SET sandbox_id=NULL,status='archived' WHERE session_key=?", (key,))
+                else:
+                    _sql(root, "DELETE FROM sessions WHERE session_key=?", (key,))
                 counts["deleted"] += 1
         except Timeout:
             counts["busy"] += 1
