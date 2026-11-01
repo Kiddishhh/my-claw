@@ -14,13 +14,20 @@ from langchain_core.messages import ToolMessage
 from scripts._verification import VerificationTrace
 from scripts._analysis_verification import SALES_CSV, analysis_task
 
-from agent.main import PROJECT_ROOT, build_agent, build_model
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
+from agent.main import PROJECT_ROOT, build_agent as _build_agent, build_model
 from infra.agent_limits import DEFAULT_MODEL_CALLS, DEFAULT_SUBAGENT_MODEL_CALLS, DEFAULT_RECURSION_LIMIT
 from infra.settings import SandboxSettings, load_langsmith_environment
 from sandbox.manager import (
     _session_key, _sql, create_daytona_client,
     sandbox_for_thread,
 )
+
+
+def build_agent(**kwargs):
+    """验收脚本显式使用内存存储，不声称跨进程持久化。"""
+    return _build_agent(checkpointer=InMemorySaver(), store=InMemoryStore(), **kwargs)
 
 
 def main() -> None:

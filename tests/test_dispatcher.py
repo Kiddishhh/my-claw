@@ -8,6 +8,129 @@ import pytest
 
 from agent import dispatcher as d
 from infra.settings import SandboxSettings
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
+
+
+@pytest.fixture(autouse=True)
+def explicit_test_persistence(monkeypatch):
+    """测试显式提供内存实现；生产入口不隐式降级。"""
+    original = d.run_task
+    async def run(*args, **kwargs):
+        kwargs.setdefault('checkpointer', InMemorySaver())
+        kwargs.setdefault('store', InMemoryStore())
+        return await original(*args, **kwargs)
+    monkeypatch.setattr(d, 'run_task', run)
+
+
+def test_agent_runs_on_callers_loop_and_session_stays_on_one_thread(tmp_path, monkeypatch):
+    from threading import get_ident
+    threads = []
+    observed = {}
+    @contextmanager
+    def session(*args, **kwargs):
+        threads.append(get_ident())
+        try:
+            yield Mock(), SimpleNamespace(id='sandbox'), Mock(), '/workspace'
+        finally:
+            threads.append(get_ident())
+    async def invoke(*args, **kwargs):
+        observed['loop'] = asyncio.get_running_loop()
+        observed['thread_key'] = kwargs['config']['configurable']['thread_id']
+        return {'messages': [SimpleNamespace(content='done')]}
+    builder = Mock(return_value=SimpleNamespace(ainvoke=invoke))
+    monkeypatch.setattr(d, 'sandbox_for_thread', session)
+    monkeypatch.setattr(d, 'save_session_workspace', lambda *args: threads.append(get_ident()))
+    monkeypatch.setattr(d, 'build_agent', builder)
+    async def run():
+        saver, store = InMemorySaver(), InMemoryStore()
+        await d.run_task('same-thread', 'build', user_id='alice', project_root=tmp_path,
+                         checkpointer=saver, store=store,
+                         settings=SandboxSettings(daytona_api_key='test', _env_file=None))
+        assert observed['loop'] is asyncio.get_running_loop()
+        assert builder.call_args.kwargs['checkpointer'] is saver
+        assert builder.call_args.kwargs['store'] is store
+        assert observed['thread_key'] == d._session_key('alice', 'same-thread')
+        assert len(set(threads)) == 1 and threads[0] != get_ident()
+    asyncio.run(run())
+
+
+def test_cancel_during_acquisition_waits_and_releases_on_same_thread():
+    from sandbox.async_session import async_sandbox_session
+    from threading import Event, get_ident
+    started, release = Event(), Event()
+    order = []
+    @contextmanager
+    def session():
+        order.append(('enter', get_ident()))
+        started.set()
+        assert release.wait(5)
+        try:
+            yield None
+        finally:
+            order.append(('exit', get_ident()))
+    async def run():
+        async def invoke():
+            async with async_sandbox_session(session()):
+                raise AssertionError('cancelled acquisition must not invoke')
+        task = asyncio.create_task(invoke())
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        await asyncio.sleep(.01)
+        task.cancel()
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert [name for name, _ in order] == ['enter', 'exit']
+        assert order[0][1] == order[1][1]
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('timeout', [False, True])
+def test_cancel_waits_for_actual_backend_command(tmp_path, monkeypatch, timeout):
+    from threading import Event
+    from tests.test_remote_agent import TestSandbox
+    from deepagents.backends.protocol import ExecuteResponse
+    started, release = Event(), Event()
+    order = []
+    class BlockingBackend(TestSandbox):
+        def execute(self, command, *, timeout=None):
+            started.set()
+            assert release.wait(5)
+            order.append('command_finished')
+            return ExecuteResponse(output='ok', exit_code=0, truncated=False)
+    @contextmanager
+    def session(*args, **kwargs):
+        try:
+            yield BlockingBackend(root_dir=tmp_path), SimpleNamespace(id='sandbox'), None, '/workspace'
+        finally:
+            order.append('unlock')
+    def build(**kwargs):
+        async def invoke(*args, **options):
+            await kwargs['backend'].aexecute('write files')
+            return {'messages': [SimpleNamespace(content='ok')]}
+        return SimpleNamespace(ainvoke=invoke)
+    monkeypatch.setattr(d, 'sandbox_for_thread', session)
+    monkeypatch.setattr(d, 'build_agent', build)
+    monkeypatch.setattr(d, 'save_session_workspace', lambda *args: order.append('save'))
+    monkeypatch.setattr(d, '_sql', lambda *args: [])
+    async def run():
+        settings = SandboxSettings(daytona_api_key='test', _env_file=None)
+        settings.syc_sandbox_task_timeout = .05 if timeout else 10
+        task = asyncio.create_task(d.run_task('t', 'work', settings=settings, project_root=tmp_path))
+        assert await asyncio.to_thread(started.wait, 5)
+        if not timeout:
+            task.cancel()
+        await asyncio.sleep(.1)
+        try:
+            assert not task.done() and order == []
+        finally:
+            release.set()
+            with pytest.raises(TimeoutError if timeout else asyncio.CancelledError):
+                await task
+        assert order == ['command_finished', 'save', 'unlock']
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("backup_fails", [False, True])

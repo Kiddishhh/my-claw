@@ -51,6 +51,18 @@ def test_reuse_restart_and_user_isolation(environment):
     assert client.create.call_args.args[0].env_vars == m.SAFE_ENV
 
 
+@pytest.mark.parametrize('stop_fails', [False, True])
+def test_cleanup_sql_error_does_not_replace_task_error(environment, monkeypatch, stop_fails):
+    import sqlite3
+    _, _, _, options = environment
+    with pytest.raises(ValueError, match='original task failure'):
+        with m.sandbox_for_thread('alice', 'issue', **options) as resources:
+            if stop_fails:
+                resources[1].stop.side_effect = RuntimeError('stop failure')
+            monkeypatch.setattr(m, '_sql', Mock(side_effect=sqlite3.OperationalError('locked')))
+            raise ValueError('original task failure')
+
+
 def test_stopped_resume_does_not_force_dependency_install(environment):
     _, client, backend, options = environment
     with m.sandbox_for_thread("alice", "issue", **options) as first:

@@ -14,6 +14,8 @@ from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import SandboxBackendProtocol
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.store.base import BaseStore
 from langgraph.graph.state import CompiledStateGraph
 
 from infra.settings import get_settings, load_langsmith_environment
@@ -141,6 +143,7 @@ def build_local_agent(
 
 def build_agent(
     *, backend: SandboxBackendProtocol, workdir: str,
+    checkpointer: BaseCheckpointSaver, store: BaseStore,
     user_id: str = "anonymous", model: BaseChatModel | None = None,
     max_model_calls: int = DEFAULT_MODEL_CALLS,
     subagent_models: dict[str, BaseChatModel] | None = None,
@@ -151,7 +154,7 @@ def build_agent(
     调用方负责准备沙箱并在整个 ainvoke 期间持有会话锁。
     workdir 是远程 Linux 绝对路径；服务器规则通过只读指导路由加载。
     thread_id 与沙箱的关联由 sandbox.manager 管理，而不是由图自动推断。
-    MemorySaver 仅用于同一图实例内会话，不等于持久化聊天历史。
+    checkpointer/store 由应用生命周期提供，远程入口不隐式创建内存替代品。
     subagent_models 按角色覆盖模型；每次委派受 max_subagent_model_calls 限制。
     AGENTS.md 指导依赖顺序与委派数量，不在编译时把角色连成固定串行工作流。
     """
@@ -184,7 +187,8 @@ def build_agent(
             ToolAuditMiddleware(), CostMeterMiddleware(),
             ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error"),
         ],
-        checkpointer=MemorySaver(),
+        checkpointer=checkpointer,
+        store=store,
         system_prompt=(
             f"你是严谨的 Web 开发助手。用户项目在远程沙箱 {workdir}，工作文件使用该目录下的绝对路径。"
             "平台规则和技能在 /guidance/ 只读虚拟路径，通过 read_file 读取；不可用 execute 访问该路径。"

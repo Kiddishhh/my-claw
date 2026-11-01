@@ -9,7 +9,7 @@ import os
 from dotenv import dotenv_values
 from functools import lru_cache
 from pathlib import Path
-from pydantic import SecretStr, Field
+from pydantic import SecretStr, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +38,23 @@ class Settings(BaseSettings):
 
     # ===== 运行 =====
     log_level: str = "INFO"
+
+
+class ResourceSettings(BaseSettings):
+    """基础服务不要求模型密钥；连接串不在 repr 中显示。"""
+    model_config = Settings.model_config.copy()
+    postgres_url: SecretStr = SecretStr("postgresql://my_claw:my_claw@localhost:5432/my_claw")
+    redis_url: SecretStr = SecretStr("redis://localhost:6379/0")
+    pg_min_size: int = Field(default=1, ge=1)
+    pg_max_size: int = Field(default=10, ge=1)
+    redis_max_connections: int = Field(default=20, ge=1)
+    resource_timeout: float = Field(default=5, gt=0)
+
+    @model_validator(mode="after")
+    def validate_pool_sizes(self):
+        if self.pg_max_size < self.pg_min_size:
+            raise ValueError("pg_max_size 不能小于 pg_min_size")
+        return self
 
 
 class LoggingSettings(BaseSettings):

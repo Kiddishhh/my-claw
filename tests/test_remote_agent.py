@@ -6,7 +6,9 @@ from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from langchain_core.messages import AIMessage, ToolMessage
 
-from agent.main import build_agent
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
+from agent.main import build_agent as _build_agent
 from tests.test_development_registration import CapturingModel
 
 
@@ -21,6 +23,26 @@ class TestSandbox(FilesystemBackend, SandboxBackendProtocol):
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         return ExecuteResponse(output="REMOTE_EXECUTED", exit_code=0, truncated=False)
+
+
+def build_agent(**kwargs):
+    """验收脚本显式使用内存存储，不声称跨进程持久化。"""
+    return _build_agent(checkpointer=InMemorySaver(), store=InMemoryStore(), **kwargs)
+
+
+def test_recompiled_graph_restores_messages_and_binds_store(tmp_path):
+    saver, store = InMemorySaver(), InMemoryStore()
+    async def run():
+        config = {'configurable': {'thread_id': 'persistent-test'}}
+        for prompt in ['first', 'second']:
+            model = CapturingModel(replies=[AIMessage(content='ok')])
+            graph = _build_agent(backend=TestSandbox(root_dir=tmp_path), workdir='/workspace',
+                                 model=model, checkpointer=saver, store=store)
+            assert graph.store is store and graph.checkpointer is saver
+            state = await graph.ainvoke({'messages': [{'role': 'user', 'content': prompt}]}, config)
+        users = [m.content for m in state['messages'] if m.type == 'human']
+        assert users == ['first', 'second']
+    asyncio.run(run())
 
 
 def test_remote_agent_registers_delegation_without_local_pytest(tmp_path):

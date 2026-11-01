@@ -12,6 +12,8 @@ class ProjectImportTests(unittest.TestCase):
     def test_all_entry_files_import_outside_repository_without_pythonpath(self):
         root = Path(__file__).resolve().parents[1]
         entries = [
+            "api/app.py",
+            "scripts/serve_api.py",
             "scripts/sandbox_cleanup.py",
             "tests/verify_agent.py",
             "tests/verify_development_tools.py",

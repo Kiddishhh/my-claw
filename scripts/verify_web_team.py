@@ -18,6 +18,8 @@ import uuid
 from langchain.messages import ToolMessage
 
 from infra.agent_limits import DEFAULT_MODEL_CALLS, DEFAULT_SUBAGENT_MODEL_CALLS
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
 from agent.dispatcher import run_task
 from agent.main import PROJECT_ROOT, build_model
 from infra.settings import SandboxSettings
@@ -150,6 +152,7 @@ async def verify(timeout: int, max_model_calls: int, max_subagent_calls: int) ->
         trace.record("start", mode="真实模型 + Daytona Web 团队", max_model_calls=max_model_calls, timeout_seconds=timeout)
         trace.record("input", task=task)
         result = await run_task(thread_id, task, user_id=user_id, project_root=folder,
+            checkpointer=InMemorySaver(), store=InMemoryStore(),
             settings=settings, client=client, model=build_model(), callbacks=[trace], include_state=True,
             max_model_calls=max_model_calls, max_subagent_model_calls=max_subagent_calls)
         checks.extend(check_agent_run(result["agent_state"]))

@@ -6,6 +6,8 @@ import threading
 
 from agent.main import PROJECT_ROOT, build_model
 from agent.dispatcher import run_task
+from infra.resources import open_resources
+from infra.async_runtime import run_async
 from infra.logging import get_logger
 from infra.settings import SandboxSettings, load_langsmith_environment
 from sandbox.manager import cleanup_idle_sandboxes, create_daytona_client, sandbox_for_thread
@@ -43,10 +45,14 @@ def main() -> None:
     worker = threading.Thread(target=sweep, name="sandbox-cleanup", daemon=True)
     worker.start()
     try:
-        result = asyncio.run(run_task(
-            args.thread_id, args.task, user_id=args.user_id,
-            project_root=args.project_root, settings=settings, client=client, model=model,
-        ))
+        async def execute():
+            async with open_resources() as resources:
+                return await run_task(
+                    args.thread_id, args.task, user_id=args.user_id,
+                    project_root=args.project_root, settings=settings, client=client, model=model,
+                    checkpointer=resources.checkpointer, store=resources.store,
+                )
+        result = run_async(execute())
         print(result["reply"])
         logger.info("工作区保存：saved={} path={} error={}",
                     result["workspace_saved"], result["workspace_path"], result["backup_error"])

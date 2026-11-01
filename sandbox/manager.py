@@ -312,18 +312,29 @@ def sandbox_for_thread(
     key = _session_key(user_id, thread_id)
     with _lock(root, key):
         backend, sandbox, client, workdir = _get_or_create_locked(thread_id, root, user_id, settings, client, backend_factory)
+        task_failed = False
         try:
             yield backend, sandbox, client, workdir
         except BaseException:
+            task_failed = True
             try:
                 sandbox.stop(timeout=120)
             except Exception as error:
                 # 停止失败不可安全复用：下一轮交给回收程序，避免两个任务重叠。
-                _sql(root, "UPDATE sessions SET status='cleanup_pending' WHERE session_key=?", (key,))
-                logger.error("沙箱停止失败，已标记回收：{}", type(error).__name__)
+                try:
+                    _sql(root, "UPDATE sessions SET status='cleanup_pending' WHERE session_key=?", (key,))
+                except Exception as metadata_error:
+                    logger.error("回收标记保存失败：{}", type(metadata_error).__name__)
+                logger.error("沙箱停止失败：{}", type(error).__name__)
             raise
         finally:
-            _sql(root, "UPDATE sessions SET last_used_at=? WHERE session_key=?", (time.time(), key))
+            try:
+                _sql(root, "UPDATE sessions SET last_used_at=? WHERE session_key=?", (time.time(), key))
+            except Exception as metadata_error:
+                # 正常任务仍报告元数据失败；已有任务异常/取消时保留最初原因。
+                if not task_failed:
+                    raise
+                logger.error("任务失败后的访问时间更新失败：{}", type(metadata_error).__name__)
 
 
 def cleanup_idle_sandboxes(
