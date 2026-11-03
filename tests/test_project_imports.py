@@ -14,6 +14,9 @@ class ProjectImportTests(unittest.TestCase):
         entries = [
             "api/app.py",
             "scripts/serve_api.py",
+            "scripts/serve_cli.py",
+            "scripts/serve_feishu.py",
+            "scripts/verify_feishu_send.py",
             "scripts/sandbox_cleanup.py",
             "tests/verify_agent.py",
             "tests/verify_development_tools.py",

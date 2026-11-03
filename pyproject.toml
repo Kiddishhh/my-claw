@@ -2,7 +2,8 @@
 name = "my-claw"
 version = "0.1.0"
 description = "my-claw —— 开源、可自部署、多模型路由、多渠道接入的开发场景 Agent Claw"
-requires-python = ">=3.11"
+# 工作区路径边界使用 Path.is_junction()（Python 3.12+）。
+requires-python = ">=3.12"
 
 # 版本说明：用 ">=" 下限，uv 自动解析到当前最新可用版本。
 # 经核对 LangChain 官方 changelog 与 PyPI（2026-05 线）：
@@ -30,6 +31,8 @@ dependencies = [
     "openpyxl>=3.1,<4",
     "matplotlib>=3.9,<4",
     "langchain-deepseek>=1.1.1",
+    "lark-oapi==1.7.5",
+    "httpx>=0.28,<1",
 ]
 
 [project.optional-dependencies]
@@ -59,6 +62,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 include-package-data = false
+
+[tool.setuptools.package-data]
+"channels.web" = ["static/*.html", "static/*.css", "static/*.js"]
 
 # 保留现有顶层模块布局；显式查找包，避免自动布局推断选中 src/。
 [tool.setuptools.packages.find]

@@ -1,324 +1,273 @@
 # my-claw
 
-## 默认运行：Daytona 远程沙箱
+基于 DeepAgents / LangGraph 的开发 Agent，支持 **Web、CLI 和飞书**接入。Agent 与模型调用运行在服务器，生成代码的文件操作和命令执行交给 **Daytona 远程沙箱**；对话保存在 PostgreSQL，项目快照保存在服务器磁盘。
 
-`build_agent(backend=..., workdir=...)` 只接收支持 execute 的沙箱后端，不回退本机。
-运行入口按 user-id/thread-id 获取、准备并锁定沙箱；详细配置、生命周期和密钥边界见 [Daytona 使用说明](docs/daytona.md)。
+当前是**本机单用户、单实例部署**，尚未实现登录鉴权、可靠后台任务队列或多服务器协调。
 
-```powershell
-uv sync --locked --all-extras
-uv run --extra daytona python -m scripts.devmate_with_mw --thread-id issue-001 --task "检查项目并总结，不修改文件"
-uv run --extra daytona python -m scripts.sandbox_cleanup --watch
-```
+## 已实现的能力
 
-本地验收脚本显式使用 `build_local_agent()`，不会创建云端资源。
-默认远程模式注册搜索/网页和 task 委派，主子代理工作文件与命令由 Daytona 提供，规则和技能通过 /guidance/ 读取服务器只读版本。
-开发任务按 AGENTS.md 指导推进 coder → tester → reviewer；多个 task 由中间件排队执行，角色顺序仍由主 Agent 决策。
-远程组件与角色工具边界见 [Daytona 使用说明](docs/daytona.md)。
-
-
-默认不上传平台仓库；统一调用入口为 `agent.dispatcher.run_task`。任务结束保存工作文件，沙箱删除后可从磁盘恢复。详见 [工作区持久保存](docs/workspace-persistence.md)。对话持久化和前端接口本阶段未实现。
-
-### Web 团队端到端验收
-
-```powershell
-uv run --extra daytona python -m scripts.verify_web_team
-```
-
-直接运行会调用真实模型并创建临时 Daytona。固定需求为零第三方依赖的商品展示页，
-检查 coder → tester → reviewer、规则和技能、真实 Node 测试/构建、磁盘源码哈希（不保存构建输出），
-随后删除沙箱，同线程从磁盘恢复，再次测试与构建。最后只清理本次临时云端资源。
-它通过正式 dispatcher 执行，不上传平台源码，不在宿主运行生成的项目。
-
-默认主代理最多 6 次模型调用，每次子代理最多 10 次，Agent 阶段超时 480 秒；
-参数为 `--max-model-calls`、`--max-subagent-calls`、`--timeout`，准备和传输不计入该超时。
-默认主代理 30 次、每次子代理委派 40 次模型调用，集中定义于 `infra/agent_limits.py`；
-dispatcher 图步数上限 1000（包括中间件节点，不等于模型调用次数）。超限仍报错并尽力保存源码。
-普通 dispatcher 任务超时默认 600 秒，可通过 `SYC_SANDBOX_TASK_TIMEOUT` 配置；
-Web 验收脚本用 `--timeout` 覆盖该值，默认仍为 480 秒。
-每次仅尝试一次，避免无意重复消费。日志输出调用摘要和脱敏异常，不展开完整模型内容。
-记录位于 `logs/web-team-verification/<线程>/`：`events.jsonl`、`report.json`，
-该目录内 `.sandbox-state/workspaces/` 保留磁盘项目。清理失败也会写报告并返回非零退出码。
-不属于浏览器视觉/交互验收，也不验证聊天持久化。`--help` 不调用模型或创建沙箱。
-
-## 当前目录与入口
-
-- `agent/`、`middleware/`：Agent 构建和中间件。
-- `sandbox/`：Daytona 会话复用、项目初始化和生命周期管理。
-- `tools/`、`subagents/`：工具及保留的可选子代理能力。
-- `infra/`：配置、日志和数据库初始化。
-- `scripts/`：默认运行入口、沙箱回收和验收公共辅助函数。
-- `tests/`：自动回归与手动验收；`verify_env.py` 检查模型配置和数据库连接。
-- `.agents/skills/`、`docs/`：开发技能和使用说明。
-- `data/`、`outputs/`：分析输入和产物。
-
-旧 TODO 普通/流式演示已删除。日常使用 `scripts.devmate_with_mw`；
-远程真实验收使用 `tests.verify_daytona`；本地文件通路和开发工具验收分别使用
-`tests.verify_agent`、`tests.verify_development_tools`。后三者不会被 pytest 自动运行。
-`.venv/` 是唯一项目虚拟环境；`.sandbox-state/` 保存沙箱映射和项目文件备份，`logs/` 保存运行与验收记录。
-
-## 保留的本地验证模式
-
-显式本地验证入口直接使用 `web_search`、`fetch_url`、`run_pytest` 和内置文件工具，加载三个开发技能。
-暂不挂载表格工具、数据分析技能、子代理和 `task`。子代理代码保留，显式传入
-`build_local_agent(enable_subagents=True)` 才启用；下文数据分析/子代理章节描述的是保留能力。
-
-验证脚本（项目根目录，使用 `.venv/Scripts/python.exe`）：
-
-```powershell
-python -m tests.verify_development_tools           # 默认真实模型和联网服务
-python -m tests.verify_development_tools --offline # 模拟模型/联网，真实执行隔离 pytest
-```
-
-PyCharm 可直接运行 `tests/verify_development_tools.py`。每次使用新的隔离目录，
-验证三个工具调用和开发技能发现；最多 8 次模型调用、180 秒总超时。
-终端只打印调用摘要和脱敏报错，报告在 `logs/development-verification/`。
-此脚本遵循 LangSmith 环境配置上传追踪；联网失败会明确报告，不作为通过。
-
-## 本地 Excel / CSV 数据分析
-
-显式启用子代理时，data_analyst 注册 `inspect_table`、`analyze_table`、`plot_analysis`、`export_report`，
-并自动发现 `local-data-analysis` 与 `analysis-reporting` 两个技能。
-将文件放在当前工作目录 `data/inputs/`；产物保留在 `outputs/analysis/<ID>/`。
-使用 `build_local_agent(workspace_root=...)` 时，输入、计算和输出都跟随该工作目录。
-除虚构的 `example_sales.csv` 外，输入文件及结果已加入 Git 忽略规则。
-
-可以向 Agent 提问：
-
-> 分析 data/inputs/example_sales.csv，只统计 status=paid，按 product 汇总 amount，
-> 金额单位为元，生成产品销售额柱状图和报告。保留原始数据。
-
-能力与限制：
-
-- 逗号分隔 CSV、XLSX；CSV 支持 UTF-8 / GB18030；多工作表需要明确 sheet_name。
-- 缺失值、重复行、字段与样本检查；原始字段按文本保留，编号不会自动丢失前导零。
-- 条件筛选、显式去重、Decimal 求和/均值/最小值/最大值、行数统计、日期分组、排序和 Top N。
-- 多表仅支持同名键的多对一 left/inner 关联；右表键重复或非键字段重名会报错。
-- 三种 PNG 图表：bar、line、scatter；导出 CSV、XLSX、Markdown，附带来源哈希和计算参数。
-- 输入上限10 MiB、100000行、100列；图表上限1000行。暂不支持旧 XLS、公式计算、任意 Python/SQL 和统计建模。
-- Excel 公式请先另存为值；不自动补零、剔除异常、丢弃缺失值或去重。无效数字/日期返回工具错误。
-- Decimal 数值在结果表中按文本保存以保证精度，图表才转换为浮点显示。报表不自动做金额舍入。
-- Excel 超长单元格或不支持的控制字符会明确报错，避免静默截断；CSV 对公式式文本做单引号转义。
-- 工具输出少量样本/结果预览，完整表格留在本地。已启用的 LangSmith 可能记录工具消息，分析前确认数据适合该追踪设置。
-
-不调用模型也可验证工具链：
-
-```python
-from pathlib import Path
-from tools.data_tools import create_data_tools
-
-tools = {t.name: t for t in create_data_tools(Path.cwd())}
-data = tools["inspect_table"].invoke({"file_path": "example_sales.csv"})
-result = tools["analyze_table"].invoke({
-    "dataset_id": data["dataset_id"], "metric": "amount", "group_by": ["product"],
-    "filters": [{"column": "status", "operator": "eq", "value": "paid"}],
-})
-tools["plot_analysis"].invoke({"result_id": result["result_id"], "x": "product"})
-print(tools["export_report"].invoke({"result_id": result["result_id"]}))
-```
-
-针对功能变更运行一次 `uv run --all-extras python -m pytest tests/test_data_tools.py -q`。
-该测试使用临时样例和离线模型，验证计算结果、路径边界、Excel/CSV、图表导出和 Agent 工具注册。
-
-## 开发环境
-
-在项目根目录安装依赖及项目自身：
-
-```powershell
-uv sync --locked --all-extras
-```
-
-uv 会将项目以可编辑方式安装到 `.venv`。修改源码会立即生效，无需重复安装。
-在现有目录下新增模块也无需向每个脚本添加 `sys.path`。
-`.env` 固定从项目根目录读取，不依赖终端当前目录。
-
-## 启动
-
-```powershell
-uv run --all-extras python -m scripts.devmate_with_mw --thread-id issue-001 --task "检查项目并总结"
-uv run --all-extras python tests/verify_env.py
-```
-
-也可直接使用 `.venv` 中的 Python 按文件路径运行：
-
-```powershell
-.\.venv\Scripts\python.exe scripts/devmate_with_mw.py --thread-id issue-001 --task "检查项目并总结"
-```
-
-Cursor 中选择 `.venv\Scripts\python.exe` 为解释器，调试时选择
-`Python: 当前文件（项目环境）`。系统 `F:\Python` 是独立环境，不包含本项目的安装。
-
-不使用 uv 时，激活同一个虚拟环境后运行 `python -m pip install -e .`，
-也可注册项目模块。uv 创建的环境默认可能没有 pip，优先使用 `uv sync`。
-
-## 验证与数据库
-
-```powershell
-uv run --all-extras python -m unittest discover -s tests -v
-```
-
-数据库启动方式和本地数据目录见 [infra/README.md](infra/README.md)。
-
-## 关键更新后的单次验收
-
-PyCharm 中直接运行 `tests/verify_agent.py`：只执行一个真实模型测试，
-使用固定模拟用户输入和 `.env` 的模型配置，验证技能读取、文件写入与回读。
-会产生 API 费用；默认最多 6 次模型调用、120 秒、累计输入 Token 软上限 50000。
-Token 在响应返回后检查，可能超出上限。
-
-```powershell
-.\.venv\Scripts\python.exe tests/verify_agent.py
-```
-
-终端以中间件风格打印每轮模型摘要、Token 用量、工具状态和最终回复摘要；
-不展开完整提示词和历史消息，工具参数与结果最多预览 160 字。报错保留脱敏异常堆栈。
-事件、报告和实际生成文件保留在
-`logs/agent-verification/<run-id>/` 下，不再随测试结束删除。
-本验收使用简短通路任务，不再重复执行两个折扣代码生成示例。
-
-日常离线回归（不调用模型）使用：
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-其余测试覆盖独立的工具、配置和失败边界；关键更新时执行相应回归即可，
-无需为了同一验收重复运行普通与流式两套真实模型任务。
-真实模型验收只通过直接运行该脚本触发，pytest / unittest discovery 不会重复执行。
-
-## Agent 的 Skills 与 Memory
-
-`build_local_agent()` 使用项目根目录作为 `FilesystemBackend` 根目录，并启用虚拟路径：
-
-- `skills=["/.agents/skills/"]`：发现项目技能的名称和描述，需要时通过文件工具读取完整 `SKILL.md`。
-- `memory=["/AGENTS.md"]`：将项目规则加载到系统提示词。
-- `MemorySaver()`：在当前 Agent 实例的进程内保存会话状态，不等于数据库持久化。
-
-带 checkpointer 的调用需要传 `thread_id`：
-
-```python
-agent = build_local_agent(max_model_calls=5)
-config = {"configurable": {"thread_id": "local-session-1"}}
-result = await agent.ainvoke(
-    {"messages": [{"role": "user", "content": "检查项目代码"}]},
-    config=config,
-)
-```
-
-同一 Agent 实例复用 `thread_id` 会延续历史；不同 ID 隔离会话。
-现有示例脚本每次生成新 ID。新建 Agent 或重启进程会丢失内存 checkpoint，磁盘上的项目文件仍保留。
-更新已有会话中的技能后，可在下一次输入设置 `skills_metadata=None` 使技能列表重新加载。
-
-`max_model_calls=None` 表示不额外限制，正整数表示一次运行最多调用模型多少轮。
-达到上限后如需继续调用模型，框架以提示消息结束；这不是 Token 或金额预算，工具调用也不单独计为模型调用。
-不根据 `openai` 兼容协议自动强制开启 `parallel_tool_calls`，因为参数支持还取决于实际服务和模型。
-
-文件工具能直接修改项目真实文件，`virtual_mode=True` 不是操作系统沙箱。
-该构建方式用于受信任的本地开发；对外服务需要另行配置文件访问权限、用户隔离和执行沙箱。
-
-## 脚本公共工具
-
-`scripts/_common.py` 为本地验收提供预算控制、调用证据和摘要输出：
-
-| 工具 | 用途 |
+| 模块 | 当前行为 |
 | --- | --- |
-| `run_with_budget` | values 流运行，观察到累计输入 Token 超预算后关闭流，每次创建新线程 ID |
-| `tool_calls` / `called` | 提取或查询模型发起的工具调用 |
-| `written_paths` / `first_turn` | 提取请求写入路径、检查调用出现的轮次 |
-| `model_call_count` / `final_reply` | 按 AIMessage 估算轮次、获取末条消息 |
-| `Check` / `report` | 区分硬性检查和参考项，汇总结果 |
-| `print_run` | 展示轨迹和用量，遮盖常见凭据模式 |
-| `run_attempts` | 有限重试，首次通过即停，异常直接向外传播 |
-| `FLOAT_MONEY` | 快速筛查常见 float 写法，不能替代金额逻辑审查 |
+| Web | 网页聊天、新建/切换会话、读取历史、上传文件、确认删除会话 |
+| CLI | 连续对话、切换线程、查看历史、上传文件、删除会话 |
+| 飞书 | 自建应用长连接接收文本，群成员共享 chat_id 对应的会话与项目，回复原消息 |
+| Agent | 主代理、7 个角色配置、Skills、AGENTS.md、工具审计、用量计量、调用限制、task 串行化 |
+| 沙箱 | 同用户同线程复用；丢失且有有效快照时重建；不默认上传平台源码 |
+| 持久化 | 一个异步 PostgreSQL 池同时供 AsyncPostgresSaver / AsyncPostgresStore 使用；Redis 独立异步池 |
+| 文件 | 用户上传进入沙箱，任务结束保存源码与项目素材，恢复时校验文件哈希 |
+| 清理 | 空闲回收保留项目快照；用户主动删除会话时清理沙箱、快照和对应数据库记录 |
+| API 基础 | Pydantic 严格模型、依赖注入、统一异常响应、请求 ID、liveness/readiness |
 
-例如在异步函数中：
+## 快速启动
 
-```python
-from scripts._common import Check, print_run, report, run_with_budget
-
-agent = build_local_agent(max_model_calls=5)
-state, budget_hit = await run_with_budget(
-    agent, "只读取项目规范并概述要求", max_input_tokens=10000,
-)
-print_run(state, budget_hit, 10000)
-passed = report([Check("未触发预算停止", not budget_hit)])
-```
-
-预算依赖 `CostMeterMiddleware`，只在收到用量更新后检查，不能提前阻止单次请求超额，
-也不会回滚已经写入的文件。用量缺失时不能确认实际消费；按 AIMessage 计数也包含框架生成的提示。
-`called`、`written_paths` 是请求证据，不保证执行成功；核验写入结果要结合 ToolMessage 和实际文件内容。
-同轮调用不能证明“读完规范之后再写文件”。`run_attempts` 不自动清理产物，
-回调负责隔离和清理，跨重试的总预算需要调用方另行控制。
-
-## Skills / Memory / 文件系统端到端验证
+以下命令在仓库根目录执行。需要 **Python 3.12+、uv、Docker**，以及有效的模型和 Daytona 凭据。项目 `.python-version` 默认使用 3.12；PyCharm 解释器选择 `.venv/Scripts/python.exe`。
 
 ```powershell
-# 显式离线：假模型 + 真实 Agent 图、中间件、checkpoint 和文件工具，不消耗 API Token。
-uv run --all-extras python tests/verify_agent.py --offline
-
-# 真实模型：使用 .env 的模型与密钥，会产生费用。
-uv run --all-extras python tests/verify_agent.py --live --max-model-calls 6 --max-input-tokens 50000 --timeout 120
+uv sync --locked --all-extras
 ```
 
-测试入口位于 `tests/verify_agent.py`（沿用项目现有的 `tests/` 目录）。
-复用 `scripts/_common.py` 的 `run_with_budget` 控制预算，
-用 `called`、`written_paths`、`first_turn` 提取调用证据，`print_run` 和 `report` 在控制台打印轨迹与检查结果。
-也可运行 `uv run --all-extras python -m tests.verify_agent --offline`；直接运行脚本会实时显示过程输出。
+### 1. 配置模型与基础资源
 
-脚本将项目真实 `AGENTS.md` 和 `my-claw-code-quality/SKILL.md` 复制到独立验证目录，
-附加不同的随机标记。Memory 标记不出现在用户任务中；Skill 标记只有读取正文后才能取得。
-Agent 需读取技能、将两种标记写入 `/verification.json`，再用文件工具回读。
-程序结合实际系统提示词、checkpoint 元数据、成功工具结果和宿主机磁盘内容进行断言。
-不修改原始规范和业务文件，也不会复制 `.env`、数据库或密钥到验证工作目录。
+在项目根目录创建或补充 `.env`，已有文件请保留现有值。下面的密钥是占位符，数据库连接需与实际 Docker 配置一致：
 
-终端逐步打印模型开始/结束、每轮 Token、工具名称/参数摘要/结果摘要/状态/耗时、
-累计用量以及检查结果。框架模型调用轮次由回调计数，和包含框架提示的 AIMessage 数分开显示；
-不包含模型 SDK 内部的 HTTP 重试。输入预算在调用完成后检查，不能保证不超额。
+```dotenv
+SYC_MODEL_NAME=deepseek-flash
+SYC_MODEL_PROVIDER=openai
+SYC_BASE_URL=https://api.deepseek.com
+SYC_API_KEY=填写模型密钥
+SYC_MAX_RETRIES=12
+SYC_TIMEOUT=60
+SYC_LOG_LEVEL=INFO
 
-每次运行保留在 `logs/agent-verification/<run-id>/`（已被 Git 忽略）：
+DAYTONA_API_KEY=填写Daytona密钥
+DAYTONA_API_URL=https://app.daytona.io/api
+SYC_SANDBOX_SEED_PLATFORM=false
+SYC_SANDBOX_TASK_TIMEOUT=600
 
-- `events.jsonl`：带时间戳、轮次和调用 ID 的过程记录，常见凭据脱敏。
-- `report.json`：检查结果、调用次数、已观测 Token、停止原因和熔断标记。
-- `workspace/verification.json`：通过真实 FilesystemBackend 写入的验证产物；失败时可能不存在。
+SYC_POSTGRES_URL=postgresql://my_claw:填写数据库密码@127.0.0.1:5432/my_claw
+SYC_REDIS_URL=redis://127.0.0.1:6379/0
+LANGSMITH_TRACING=false
+```
 
-`--log-dir` 可以指定记录的父目录。停止原因区分 `completed`、`input_budget`、
-`model_call_limit`、`timeout` 和 `error`。缺少用量信息时预算不能被可靠验证，验收不会算通过。
-退出码 0 表示所有硬性检查通过，1 表示未通过；默认不自动重试。真实验收遵循 `LANGSMITH_TRACING` 开关；离线或注入模型同样遵循该配置。
-启动时自动加载 `.env` 的 LangSmith 配置，已有进程环境变量优先。启用后提示词、模型回复及工具调用上传到配置的 LangSmith 项目。
-离线通过只证明程序接线和文件通路，不能证明真实模型鉴权、工具选择或规范遵循；这些由 `--live` 验证。
-## 本地验收模式的 DeepAgents 子代理
+连接串中的密码若包含 `@`、`:` 等特殊字符，需要 URL 编码。模型名、端点和权限须以实际账号可用配置为准；上面对应项目默认设置。搜索/网页读取工具目前仅支持 DeepSeek 官方服务，更换模型供应商不会自动替换搜索工具。
 
-`agent.main.build_local_agent(enable_subagents=True)` 可注册六个专职角色，主代理通过 `task` 按需委派：
+`.env`、`.env.docker` 已被 Git 忽略。模型和 Daytona 管理密钥只在服务器使用，不注入远程环境。LangSmith 由环境变量控制；开启后可能上传提示词、模型回复和工具记录，不是本地日志开关。
 
-| 角色 | 负责内容 | 自定义工具 |
+### 2. 启动数据库
+
+根目录 `.env.docker` 使用以下变量，值必须和 `.env` 的数据库连接对应；不要将模型密钥放入这个文件：
+
+```dotenv
+MY_CLAW_POSTGRES_USER=my_claw
+MY_CLAW_POSTGRES_PASSWORD=填写数据库密码
+MY_CLAW_POSTGRES_DB=my_claw
+MY_CLAW_POSTGRES_PORT=5432
+MY_CLAW_REDIS_PORT=6379
+```
+
+```powershell
+docker compose --env-file .env.docker up -d --wait
+uv run --all-extras python -m tests.verify_env
+```
+
+PostgreSQL 使用 `pgvector/pgvector:pg17`，Redis 使用 `redis:8-alpine`，端口仅绑定 `127.0.0.1`。容器数据分别位于 `../docker-data/postgres`、`../docker-data/redis`。已有数据目录不会因修改初始化环境变量自动更改账号密码，详见 [数据库说明](infra/README.md)。
+
+`open_resources()` 负责建池、连通检查、Saver/Store 的 `setup()` 和统一关闭。Web 与飞书是独立进程，各自创建自己的资源池；同一进程内复用。
+
+### 3. Web 与 CLI
+
+```powershell
+uv run --all-extras python scripts/serve_api.py
+```
+
+- 网页：<http://127.0.0.1:8000>
+- 接口文档：<http://127.0.0.1:8000/docs>
+- 健康检查：`GET /healthz` 纯探活，`GET /readyz` 检查 PostgreSQL / Redis；不代表模型或 Daytona 已连通。
+
+另开一个终端运行 CLI：
+
+```powershell
+uv run --all-extras python scripts/serve_cli.py
+# 指定已有会话
+uv run --all-extras python scripts/serve_cli.py --thread-id example-session
+```
+
+CLI 命令：`/new`、`/use ID`、`/history`、`/upload 本地文件路径`、`/delete`、`/exit`。删除需输入 `DELETE` 确认。PyCharm 可直接运行 `scripts/serve_api.py`、`scripts/serve_cli.py`。
+
+Web / CLI / 原 HTTP API 的身份固定为 `user_id=local-user`，相同 thread_id 可续聊；它们不是互相隔离的用户。浏览器生成会话 UUID，并在 localStorage 保存 ID、标题和上传路径；历史消息来自 checkpoint。当前没有服务器会话列表接口，更换浏览器不会自动发现旧会话。
+
+### 4. 飞书
+
+在 `.env` 增加 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`，应用开启机器人能力、相关消息权限，并使用长连接订阅 `im.message.receive_v1`：
+
+```powershell
+uv run --all-extras python scripts/serve_feishu.py
+```
+
+同应用只启动一个接收进程。飞书不依赖 Web API 进程；需要数据库、模型和沙箱可用。长连接模式不需要公网回调或 Verification Token。
+
+飞书以应用、租户、chat_id 派生共享归属，同群成员共享项目；发送者 open_id 只标识发言来源，不做成员鉴权。只处理文本，尚不接收飞书附件或提供群内删除命令。设置和收发验收见 [飞书说明](channels/feishu/README.md)。
+
+## 一次请求如何执行
+
+```text
+Web / CLI / 飞书
+  → 渠道解析，确定 user_id、thread_id、channel
+  → dispatcher 取得跨进程会话文件锁
+  → 复用 Daytona；或创建空工作区 / 从有效快照恢复
+  → 构建主 Agent + subagents + skills + memory + middleware
+  → 模型在服务器决策，文件工具和 execute 操作远程项目
+  → PostgreSQL checkpoint 持久化对话状态
+  → 下载并校验项目文件，发布本地快照，更新 SQLite 映射
+  → 返回文字回复及 workspace_saved 状态
+```
+
+内部会话键由 `SHA256(JSON([user_id, thread_id]))` 派生，同时关联 checkpoint、沙箱映射和磁盘目录。`channel=web/cli/api/feishu` 是请求来源，`agent_role` 是执行角色；两者不改变会话键。哈希不是用户鉴权。
+
+`build_agent()` 只组装完整 Agent，`agent.dispatcher.run_task()` 才是包含沙箱生命周期和文件落盘的一次任务入口。不要绕过 dispatcher 另写一套渠道调用。
+
+## Agent 组件与边界
+
+主代理挂载 `web_search`、`fetch_url` 和框架的规划、文件、委派工具。六个专职角色加一个显式覆盖的通用角色如下：
+
+| 角色 | 作用及工具边界 |
+| --- | --- |
+| planner | 只读规划步骤和验收标准 |
+| researcher | 只读调研，可使用搜索和网页读取 |
+| coder | 远程读写代码、执行命令 |
+| tester | 远程补测试、运行测试/构建 |
+| reviewer | 只读审查，使用 ReviewResult 结构化输出 |
+| data_analyst | 在沙箱中用 Python 计算、绘图和导出，不调用宿主表格工具 |
+| general-purpose | 只读背景整理，不替代编码/测试角色 |
+
+主子代理共享同一会话沙箱。`TaskSerializationMiddleware` 让同一主 Agent 的 task 委派排队，角色顺序由 AGENTS.md 指导；它不锁住主代理的其他工具，也不管理远程后台进程。角色工具白名单不等于沙箱内部的 OS 用户隔离。
+
+平台 `AGENTS.md`、三个开发技能以及两个分析技能保存在服务器。`CompositeBackend` 将 `/guidance/` 路由到只读指导副本，项目路径与 execute 交给 Daytona。Skills 使用框架渐进式披露；Memory 指的是加载规则文件，不等于对话数据库。技能附带的可执行脚本不会自动上传到沙箱。
+
+自定义中间件负责请求上下文、工具审计、Token 计量、task 串行化、模型调用限制。DeepAgents 另外组装框架内置组件；其具体行为以锁定依赖和实际图为准。
+
+| 限制 | 默认值 |
+| --- | --- |
+| 主代理模型调用次数 / 单次运行 | 30 |
+| 子代理模型调用次数 / 每次委派 | 40 |
+| dispatcher 图递归步数 | 1000（包含中间件节点，不等于模型调用数） |
+| Agent 执行超时 | 600 秒，可由 `SYC_SANDBOX_TASK_TIMEOUT` 修改 |
+| 远程命令超时 | 300 秒 |
+
+远程调用超限会报错并尽力保存工作区，不保证“平稳成功”。Agent 超时不包含沙箱准备与后续文件传输。Token 计量不是金额预算，也没有全团队统一 Token 硬限额。
+
+DeepSeek 官方端点使用 `infra/model_policy.py` 的兼容适配：主代理、researcher、tester、reviewer、general-purpose 关闭思考，planner、coder、data_analyst 使用 low 思考；保留工具调用需要的 reasoning_content。其他供应商不套用该策略。
+
+## 文件上传、保存与删除
+
+### 上传
+
+网页选择文件，或 CLI 执行 `/upload 路径`。服务器按流检查大小，单文件上限 **20 MiB**，写入当前沙箱的 `inputs/唯一前缀_文件名`，保存工作区快照后返回路径。不会自动解压、执行或覆盖同名文件。
+
+网页会把已上传路径附到后续任务；CLI 显示路径，由用户在任务中引用。文件位于用户电脑时，必须经上传传递，服务器不能凭用户电脑路径直接读取。分析角色优先使用委派提供的远程绝对路径，兼容 `inputs/` 和已有项目的 `data/inputs/`。
+
+### 保存与恢复
+
+```text
+.sandbox-state/
+  sessions.sqlite3                 # 沙箱 ID、状态、有效快照路径等映射
+  <会话键>.lock                    # 同会话跨进程互斥
+  workspaces/<会话键>/
+    versions/<版本ID>/
+      project/                     # 实际保存的项目文件
+      manifest.json                # 相对路径、类型、权限、大小、哈希
+    staging/                       # 正在下载的临时版本
+  guidance/<内容哈希>/             # 共享的只读指导副本
+```
+
+正常任务结束保存；异常时尽力保存。下载和校验成功后才更新有效版本，保留当前和上一版本。`workspace_saved=true` 只代表本次项目快照已保存，不代表代码测试全部通过。备份失败保留旧版本，不冒充成功。
+
+保存源码、测试、配置、锁文件、静态资源和输入文件；排除依赖、缓存、日志、根目录构建输出及 `outputs/`。沙箱清理后恢复文件并按需重新安装依赖，不恢复运行进程、终端历史或预览链接。分析报告若写入 `outputs/analysis/`，当前不会持久保存，Web 也尚无产物下载接口。
+
+更多校验规则、符号链接处理和异常恢复见 [工作区持久保存](docs/workspace-persistence.md)。
+
+### 空闲回收与主动删除不同
+
+```powershell
+uv run --all-extras python -m scripts.sandbox_cleanup --watch
+```
+
+回收器默认每 60 秒检查，空闲阈值 3600 秒；它是独立进程，不随 API 自动启动。空闲回收先保存再删除远程沙箱，保留本地恢复数据。Daytona 另配置自动停止 30 分钟、停止后自动删除间隔 1440 分钟；平台回收不保证触发应用备份。
+
+用户主动删除通过 `DELETE /v1/agent/sessions/{thread_id}`：取得会话锁后删除远程沙箱、checkpoint、会话级 Store 数据、本地项目快照及 SQLite 映射。忙时返回 409；部分失败保留删除中标记供重复请求继续清理。不会清空数据库、Redis、其他会话、共享指导副本或历史服务日志。空锁文件保留，避免破坏并发锁语义。
+
+## HTTP 接口
+
+| 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| planner | 拆解计划与验收标准，只读 | 无 |
-| researcher | 仓库与外部技术资料调研，只读 | web_search、fetch_url |
-| coder | 实现代码改动 | 无（使用内置文件工具） |
-| tester | 补充必要测试、执行当前工作区 pytest | run_pytest |
-| reviewer | 只读审查，返回 ReviewResult JSON | 无 |
-| data_analyst | 本地 CSV/XLSX 分析、绘图和报告导出 | inspect_table、analyze_table、plot_analysis、export_report |
+| POST | `/v1/agent/tasks` | 原有入口，来源 api |
+| POST | `/v1/agent/channels/web/tasks` | 网页入口 |
+| POST | `/v1/agent/channels/cli/tasks` | CLI 入口 |
+| GET | `/v1/agent/sessions/{thread_id}/messages` | 可展示的 checkpoint 历史 |
+| POST | `/v1/agent/sessions/{thread_id}/files?filename=example.csv` | 原始二进制请求体上传，不是 multipart |
+| DELETE | `/v1/agent/sessions/{thread_id}` | 主动清理会话 |
+| GET | `/healthz`、`/readyz` | 服务及数据库健康检查 |
 
-框架的 `general-purpose` 被显式覆盖为只读背景整理助手。仅 coder/tester 提供内置写文件工具；
-data_analyst 通过表格工具写入限定的分析产物目录。所有角色加载工作区 `/AGENTS.md`，
-两个分析技能位于 `subagents/skills/data-analysis/`，只由 data_analyst 自动发现；开发技能仍在 `.agents/skills/`。
+任务请求为 `{"thread_id":"demo-1","message":"创建一个页面"}`，返回 `thread_id/status/reply/workspace_saved`。模型调用、上传和删除都在当前请求内等待完成，没有后台任务队列。错误响应格式为 `code/message/request_id`，响应头包含 `X-Request-ID`。
 
-示例请求：“把 data/inputs/example_sales.csv 交给 data_analyst，先检查质量，再按商品汇总金额并导出报告。”
-主代理负责传递目标、路径和指标口径，子代理返回摘要与产物路径。终端显示角色、工具和 Token 摘要。
+Web / CLI 新接口校验本地主机名及浏览器 Origin；这不是多人身份认证。请保持默认本机监听，公开部署前补充登录、归属校验、配额和网络访问策略。
 
-默认所有角色使用 `.env` 中配置的主模型，无需增加密钥或服务。可通过
-`build_local_agent(subagent_models={"reviewer": another_model})` 为角色传入独立模型对象。
-`max_model_calls` 仅限制主代理；`max_subagent_model_calls=40` 限制每次委派，超限报错，不是全局调用预算。
-本地后端不提供 execute/shell；pytest 使用当前虚拟环境和当前 workspace_root，超时 120 秒。
-这些工具限制不构成操作系统沙箱，pytest 只能执行受信任项目的代码。
+## 测试与真实验收
 
-## DeepSeek 角色思考策略
+```powershell
+# 自动回归：假模型/测试后端为主，不触发真实模型任务
+uv run --all-extras python -m pytest -q
+uv run --all-extras python -m unittest discover -s tests -v
 
-`AGENTS.md` 是通用开发运行规则，不再包含平台维护或订单服务专属要求。
-Memory 已注入的规则不重复读取；Skills 仍按任务渐进式加载。
+# 基础资源连通，真实 PostgreSQL / Redis，无模型或 Daytona 调用
+uv run --all-extras python -m tests.verify_env
 
-策略集中在 `infra/model_policy.py` 的 `ROLE_REASONING`：主代理、researcher、tester、reviewer、general-purpose 关闭思考；planner、coder、data_analyst 启用 low 思考。
-官方 DeepSeek 端点自动使用 `langchain-deepseek` 适配器，保留已有 `SYC_MODEL_PROVIDER=openai` 配置；无需改密钥或 URL。
-兼容层补齐当前适配器的工具调用 reasoning_content 回传，终端不打印推理原文。
-其他供应商和离线模型不套用此策略。显式传入官方 DeepSeek 模型时，思考角色应使用 `DeepSeekChatModel`，避免 ChatOpenAI 丢失推理字段。
-这些设置在新建 Agent 时生效；low 思考仍会产生推理 Token，实际成本及质量需真实任务验证。
+# 显式数据库集成，使用随机测试线程，仅清理测试数据
+$env:SYC_TEST_DATABASE="1"
+uv run --all-extras python -m pytest tests/test_postgres_integration.py -q
+Remove-Item Env:SYC_TEST_DATABASE
+
+# 显式本地离线验证：真实框架/文件工具，模拟模型
+uv run --all-extras python -m tests.verify_agent --offline
+```
+
+以下命令会调用真实模型或外部服务，并可能产生费用：
+
+```powershell
+# 真实远程团队：开发、测试、审查、保存与重建验证
+uv run --all-extras python -m scripts.verify_web_team
+# 一次远程任务（使用正式 dispatcher）
+uv run --all-extras python -m scripts.devmate_with_mw --thread-id issue-001 --task "检查项目并总结"
+```
+
+`verify_web_team` 默认主代理 30 次、子代理 40 次、Agent 超时 480 秒，不是网页聊天 UI 验收。结果记录在 `logs/web-team-verification/`。更多旧验收入口的上传范围和限制见 [Daytona 说明](docs/daytona.md)。
+
+`build_local_agent()` 是显式本地验证模式，默认不启用子代理，使用进程内 MemorySaver 和本地文件系统。`enable_subagents=True` 才挂载本地角色与表格工具。它不提供 OS 隔离，不能替代正式远程入口处理不可信代码。
+
+## 当前边界与后续工作
+
+- **用户隔离**：本地渠道共用 local-user，飞书群共享身份；未实现登录、成员授权或多租户服务。
+- **对话历史**：checkpoint 是可恢复的图状态，不是独立聊天归档；消息被框架总结/裁剪后，历史接口不会恢复被裁剪原文。
+- **长期记忆**：Store 已注入，但没有自动提取用户偏好、语义检索或跨会话记忆策略。Redis 已接入，尚未承担队列、限流或会话缓存。
+- **可靠任务**：HTTP 等待完整结果；飞书队列/去重在内存中，强制退出可能丢失待处理任务，回复发送失败不自动重跑 Agent。
+- **并发部署**：文件锁和 SQLite 仅协调同一台主机、同一状态目录；当前数据库 setup 按单进程启动设计。
+- **结果交付**：已有文字回复与源码快照，未实现产物下载、预览服务管理或运行报告长期保存。
+- **边界验证**：离线测试不能证明模型鉴权、Daytona 镜像依赖或真实工具选择正确；真实环境变更后需单独验收。
+
+下一步优先考虑身份与会话列表、产物下载，再按需求引入可靠队列和多实例协调。
+
+## 目录与进一步说明
+
+| 目录 | 职责 |
+| --- | --- |
+| `agent/` | 模型与 Agent 构建、任务 dispatcher、会话服务、只读指导路由 |
+| `api/`、`domain/` | HTTP 组装、严格契约、依赖注入和业务异常 |
+| `channels/` | Web 页面、CLI、飞书适配 |
+| `sandbox/` | 同步 SDK 异步桥接、沙箱生命周期、磁盘快照 |
+| `subagents/`、`middleware/` | 角色、分析技能和运行控制 |
+| `tools/` | 搜索/网页工具，以及显式本地模式的测试与表格工具 |
+| `infra/` | 配置、日志、异步入口、连接池、模型策略 |
+| `.agents/skills/`、`AGENTS.md` | 开发技能与通用运行规范 |
+| `tests/`、`scripts/` | 自动回归、服务启动、回收与显式验收 |
+
+详细说明：[本地渠道与接口](channels/README.md) · [飞书接入](channels/feishu/README.md) · [沙箱配置](docs/daytona.md) · [文件持久化](docs/workspace-persistence.md) · [数据库配置](infra/README.md)。

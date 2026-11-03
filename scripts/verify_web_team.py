@@ -23,7 +23,7 @@ from langgraph.store.memory import InMemoryStore
 from agent.dispatcher import run_task
 from agent.main import PROJECT_ROOT, build_model
 from infra.settings import SandboxSettings
-from sandbox.manager import (_lock, _session_key, _sql, create_daytona_client, sandbox_for_thread)
+from sandbox.manager import (_lock, session_key, _sql, create_daytona_client, sandbox_for_thread)
 from sandbox.workspace import _inside
 from scripts._common import Check, report, tool_calls, _redact
 from scripts._verification import VerificationTrace
@@ -133,7 +133,7 @@ async def verify(timeout: int, max_model_calls: int, max_subagent_calls: int) ->
     """只运行一次独立会话；失败也保存摘要并清理本次创建的沙箱。"""
     thread_id = f"web-team-{uuid.uuid4().hex}"
     user_id = "verification"
-    key = _session_key(user_id, thread_id)
+    key = session_key(user_id, thread_id)
     folder = PROJECT_ROOT / "logs/web-team-verification" / thread_id
     folder.mkdir(parents=True)
     checks: list[Check] = []
@@ -151,7 +151,7 @@ async def verify(timeout: int, max_model_calls: int, max_subagent_calls: int) ->
         task = issue_for(workdir)
         trace.record("start", mode="真实模型 + Daytona Web 团队", max_model_calls=max_model_calls, timeout_seconds=timeout)
         trace.record("input", task=task)
-        result = await run_task(thread_id, task, user_id=user_id, project_root=folder,
+        result = await run_task(thread_id, task, user_id=user_id, channel="cli", project_root=folder,
             checkpointer=InMemorySaver(), store=InMemoryStore(),
             settings=settings, client=client, model=build_model(), callbacks=[trace], include_state=True,
             max_model_calls=max_model_calls, max_subagent_model_calls=max_subagent_calls)

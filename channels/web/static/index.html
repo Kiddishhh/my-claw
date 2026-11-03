@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MyClaw · 工作会话</title><link rel="stylesheet" href="/assets/style.css"><script src="/assets/app.js" defer></script></head>
+<body>
+<aside><div class="brand"><span class="mark">M</span><strong>MyClaw</strong></div><p class="muted">你的开发工作台</p><button id="new" class="primary">＋ 新建会话</button><nav id="sessions" aria-label="会话列表"></nav><footer>本机工作区<br>文件在隔离沙箱内处理</footer></aside>
+<main><header><div><span class="eyebrow">工作会话</span><h1 id="title">新会话</h1></div><button id="delete" class="danger">删除会话</button></header>
+<section id="messages" aria-label="对话记录" aria-live="polite"></section>
+<section class="composer"><div id="notice" role="status"></div><div id="attachments"></div><form id="chat"><label class="sr-only" for="prompt">任务描述</label><textarea id="prompt" maxlength="49000" rows="3" placeholder="描述你想完成的任务，或上传文件让我一起处理…" required></textarea><div class="actions"><label class="upload" for="files">＋ 上传文件</label><input id="files" type="file" multiple hidden><span class="muted">每个文件最多 20 MiB</span><button id="send" class="primary" type="submit">发送 ↗</button></div></form><p class="hint">文件上传后保存在当前会话中。删除会话会永久清理项目文件、对话记录和沙箱。</p></section>
+</main>
+<dialog id="confirm"><h2>删除这个会话？</h2><p>对话记录、上传文件、项目源码及远程沙箱都会被清理，无法撤销。</p><div class="actions"><button id="cancel-delete">保留会话</button><button id="confirm-delete" class="danger">确认删除</button></div></dialog>
+</body></html>

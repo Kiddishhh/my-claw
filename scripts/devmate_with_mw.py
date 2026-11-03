@@ -48,7 +48,7 @@ def main() -> None:
         async def execute():
             async with open_resources() as resources:
                 return await run_task(
-                    args.thread_id, args.task, user_id=args.user_id,
+                    args.thread_id, args.task, user_id=args.user_id, channel="cli",
                     project_root=args.project_root, settings=settings, client=client, model=model,
                     checkpointer=resources.checkpointer, store=resources.store,
                 )

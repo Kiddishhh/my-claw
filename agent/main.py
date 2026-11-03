@@ -129,7 +129,7 @@ def build_local_agent(
         )],
         subagents=build_subagents(workspace_root if workspace_root is not None else PROJECT_ROOT,
                                  models=subagent_models, default_model=selected_model, max_model_calls=max_subagent_model_calls,
-                                 user_id=user_id) if enable_subagents else [],
+                                 user_id=user_id, channel=channel) if enable_subagents else [],
         system_prompt=DEVMATE_SYSTEM_PROMPT,
         backend=backend,
         skills=SKILLS_SOURCES,
@@ -144,7 +144,7 @@ def build_local_agent(
 def build_agent(
     *, backend: SandboxBackendProtocol, workdir: str,
     checkpointer: BaseCheckpointSaver, store: BaseStore,
-    user_id: str = "anonymous", model: BaseChatModel | None = None,
+    user_id: str = "anonymous", channel: str = "cli", model: BaseChatModel | None = None,
     max_model_calls: int = DEFAULT_MODEL_CALLS,
     subagent_models: dict[str, BaseChatModel] | None = None,
     max_subagent_model_calls: int = DEFAULT_SUBAGENT_MODEL_CALLS,
@@ -176,13 +176,13 @@ def build_agent(
         tools=[web_search, fetch_url],
         subagents=build_remote_subagents(
             backend, workdir, models=subagent_models, default_model=selected_model,
-            max_model_calls=max_subagent_model_calls, user_id=user_id,
+            max_model_calls=max_subagent_model_calls, user_id=user_id, channel=channel,
         ),
         skills=DEV_SKILLS,
         memory=MEMORY,
         permissions=GUIDANCE_PERMISSIONS,
         middleware=[
-            RequestContextMiddleware(user_id=user_id, channel="daytona"),
+            RequestContextMiddleware(user_id=user_id, channel=channel),
             TaskSerializationMiddleware(),
             ToolAuditMiddleware(), CostMeterMiddleware(),
             ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error"),

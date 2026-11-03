@@ -45,12 +45,13 @@ def test_agent_runs_on_callers_loop_and_session_stays_on_one_thread(tmp_path, mo
     async def run():
         saver, store = InMemorySaver(), InMemoryStore()
         await d.run_task('same-thread', 'build', user_id='alice', project_root=tmp_path,
-                         checkpointer=saver, store=store,
+                         checkpointer=saver, store=store, channel='feishu',
                          settings=SandboxSettings(daytona_api_key='test', _env_file=None))
         assert observed['loop'] is asyncio.get_running_loop()
         assert builder.call_args.kwargs['checkpointer'] is saver
         assert builder.call_args.kwargs['store'] is store
-        assert observed['thread_key'] == d._session_key('alice', 'same-thread')
+        assert builder.call_args.kwargs['channel'] == 'feishu'
+        assert observed['thread_key'] == d.session_key('alice', 'same-thread')
         assert len(set(threads)) == 1 and threads[0] != get_ident()
     asyncio.run(run())
 
@@ -114,7 +115,7 @@ def test_cancel_waits_for_actual_backend_command(tmp_path, monkeypatch, timeout)
     monkeypatch.setattr(d, 'sandbox_for_thread', session)
     monkeypatch.setattr(d, 'build_agent', build)
     monkeypatch.setattr(d, 'save_session_workspace', lambda *args: order.append('save'))
-    monkeypatch.setattr(d, '_sql', lambda *args: [])
+    monkeypatch.setattr(d, 'get_dependency_warning', lambda *args: None)
     async def run():
         settings = SandboxSettings(daytona_api_key='test', _env_file=None)
         settings.syc_sandbox_task_timeout = .05 if timeout else 10
@@ -207,7 +208,7 @@ def test_dependency_warning_reaches_agent(tmp_path, monkeypatch):
     invoke = AsyncMock(return_value={"messages": [SimpleNamespace(content="fixed")]})
     monkeypatch.setattr(d, "sandbox_for_thread", session)
     monkeypatch.setattr(d, "save_session_workspace", lambda *args: "version")
-    monkeypatch.setattr(d, "_sql", lambda *args: [{"dependency_warning": "依赖安装失败 exit_code=1"}])
+    monkeypatch.setattr(d, "get_dependency_warning", lambda *args: "依赖安装失败 exit_code=1")
     monkeypatch.setattr(d, "build_agent", lambda **kwargs: SimpleNamespace(ainvoke=invoke))
     result = asyncio.run(d.run_task("thread", "修复依赖", project_root=tmp_path,
                                    settings=SandboxSettings(daytona_api_key="test", _env_file=None)))

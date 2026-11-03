@@ -46,3 +46,33 @@ def test_persistence_survives_pool_and_graph_recreation(tmp_path):
                 await resources.checkpointer.adelete_thread(thread)
                 await resources.store.adelete(namespace, "preference")
     run_async(run())
+
+
+@pytest.mark.skipif(os.getenv("SYC_TEST_DATABASE") != "1", reason="需要显式开启真实数据库测试")
+def test_session_delete_clears_own_checkpoint_and_store(tmp_path):
+    """只写/删测试随机线程；不创建 Daytona 资源，不触碰现有用户会话。"""
+    from agent.sessions import delete_session, read_history
+    from sandbox.manager import session_key
+    from langgraph.graph import StateGraph, MessagesState, START, END
+    thread = 'delete-check-' + uuid4().hex
+    key = session_key('local-user', thread)
+    namespace = ('sessions', key, 'test')
+    async def run():
+        async with open_resources() as resources:
+            try:
+                graph = StateGraph(MessagesState)
+                graph.add_node('answer', lambda state: {'messages': [AIMessage(content='ok')]})
+                graph.add_edge(START, 'answer')
+                graph.add_edge('answer', END)
+                agent = graph.compile(checkpointer=resources.checkpointer)
+                await agent.ainvoke({'messages':[{'role':'user','content':'test'}]}, {'configurable':{'thread_id':key}})
+                await resources.store.aput(namespace,'value',{'test':True})
+                assert len(await read_history(thread,checkpointer=resources.checkpointer)) == 2
+                await delete_session(thread,checkpointer=resources.checkpointer,store=resources.store,project_root=tmp_path)
+                assert await read_history(thread,checkpointer=resources.checkpointer) == []
+                assert await resources.store.aget(namespace,'value') is None
+                await delete_session(thread,checkpointer=resources.checkpointer,store=resources.store,project_root=tmp_path)
+            finally:
+                await resources.checkpointer.adelete_thread(key)
+                await resources.store.adelete(namespace,'value')
+    run_async(run())

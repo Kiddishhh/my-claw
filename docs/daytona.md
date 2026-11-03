@@ -24,7 +24,7 @@ uv run --extra daytona python -m scripts.devmate_with_mw --thread-id issue-001 -
 - `cleanup_idle_sandboxes`：尝试获取同会话锁，活跃会话跳过；先保存后删除，保留会话和磁盘版本关联。
 
 模型、搜索请求、LangSmith 上传和管理 SDK 在本机运行；任务文件操作和 execute 在远程沙箱运行，/guidance/ 文件读取在服务器。
-聊天 checkpoint 仍是图实例内存，不随 SQLite 沙箱映射恢复；跨进程保留远程文件和已保存的本地工作区版本。
+正式入口的聊天 checkpoint 保存在 PostgreSQL，与 SQLite 沙箱映射分开维护；跨进程可续聊，远程文件则通过沙箱复用或磁盘快照恢复。
 SQLite 在 `.sandbox-state/`，请勿随意删除。标签辅助找回创建请求中断后未登记 ID 的资源。
 不同用户必须由可信调用方提供身份；CLI 的 user-id 是本地开发标识，不是鉴权系统。
 
@@ -41,7 +41,7 @@ SQLite 在 `.sandbox-state/`，请勿随意删除。标签辅助找回创建请�
 | SYC_SANDBOX_AUTO_STOP_MINUTES | 30 | 平台自动停止间隔 |
 | SYC_SANDBOX_AUTO_DELETE_MINUTES | 1440 | 持续停止多久后平台自动删除 |
 
-主入口存活期间运行扫描线程。若程序不运行时也要持续按本地空闲时间回收：
+`scripts/devmate_with_mw.py` 的单任务入口运行期间带有扫描线程；Web API、交互 CLI 和飞书服务不会自动启动此线程。持续按本地空闲时间回收需单独启动：
 
 ```powershell
 uv run --extra daytona python -m scripts.sandbox_cleanup --watch
@@ -73,7 +73,7 @@ uv run --extra daytona python -m scripts.sandbox_cleanup --watch
 `build_agent(backend=..., workdir=...)` 返回已编译的图：主代理加载开发技能和 AGENTS.md；
 六个专职子代理与只读 general-purpose 共用同一个 backend/workdir。
 每个子代理显式配置 memory、skills、角色请求上下文、工具审计、Token 计量和模型调用上限。
-主代理默认最多 12 次模型调用，每次子代理委派默认最多 12 次；这不是全局 Token 预算。
+主代理默认最多 30 次模型调用，每次子代理委派默认最多 40 次；这不是全局 Token 预算。
 可通过 subagent_models 按角色注入模型，通过 max_subagent_model_calls 设置子代理上限。
 
 - planner / researcher / reviewer / general-purpose：只读文件工具，无 execute、write_file、edit_file。
@@ -87,12 +87,11 @@ uv run --extra daytona python -m scripts.sandbox_cleanup --watch
 外部会话锁仍覆盖整个主子代理执行期；图内部 task 另由异步锁串行化，普通工具不受这把锁保护。
 角色工具白名单不是同一沙箱内的 OS 权限隔离，execute 可运行任意受授权项目代码。
 
-已有沙箱不会被宿主源码覆盖。规则与技能由服务器 /guidance/ 只读路由加载，新建 Agent 使用当前内容版本；不需要修改沙箱中的规则文件。聊天 checkpoint 仍在内存中。
-上传清单不包含 data/inputs/；远程分析前需另行准备经过授权的输入文件。
+已有沙箱不会被宿主源码覆盖。规则与技能由服务器 /guidance/ 只读路由加载，新建 Agent 使用当前内容版本；不需要修改沙箱中的规则文件。正式入口使用 PostgreSQL checkpoint；只有显式本地验证入口使用内存 checkpoint。
+Web/CLI 上传文件进入沙箱 inputs/ 并保存项目快照；远程分析按委派给出的沙箱绝对路径读取。平台自测 seed 清单不包含 data/inputs/，旧验收脚本会单独准备测试文件。
 
 DeepSeek 官方接口的思考模式不接受 ToolStrategy 的强制工具选择。
-构建时仅复制 reviewer 模型并设置 thinking=disabled，保留主代理及其他角色的思考配置；
-其他提供商不自动改写。reviewer 仍通过 ReviewResult 做结构校验。
+角色策略集中于 infra/model_policy.py：main/researcher/tester/reviewer/general-purpose 关闭思考，planner/coder/data_analyst 使用 low 思考。模型通过副本设置，其他提供商不自动改写。reviewer 仍通过 ReviewResult 做结构校验。
 
 ## 串行化与数据分析验收
 

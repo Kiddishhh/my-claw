@@ -183,7 +183,7 @@ def test_saved_workspace_survives_cleanup_and_recreates(environment):
     root, client, backend, options = environment
     with m.sandbox_for_thread("alice", "web", **options) as first:
         first_id = first[1].id
-        version = m.save_session_workspace(root, m._session_key("alice", "web"), backend, first[3])
+        version = m.save_session_workspace(root, m.session_key("alice", "web"), backend, first[3])
     m._sql(root, "UPDATE sessions SET last_used_at=0")
     assert m.cleanup_idle_sandboxes(**options)["deleted"] == 1
     row = m._sql(root, "SELECT * FROM sessions")[0]
@@ -208,7 +208,7 @@ def test_backup_failure_blocks_cleanup(environment):
 def test_confirmed_missing_restores_but_network_error_does_not(environment):
     root, client, backend, options = environment
     with m.sandbox_for_thread("alice", "web", **options) as first:
-        m.save_session_workspace(root, m._session_key("alice", "web"), backend, first[3])
+        m.save_session_workspace(root, m.session_key("alice", "web"), backend, first[3])
     client.get.side_effect = RuntimeError("network")
     with pytest.raises(RuntimeError):
         m.get_or_create_sandbox_backend("web", **options, user_id="alice")
@@ -233,7 +233,7 @@ def test_missing_without_backup_never_becomes_empty_project_after_cleanup(enviro
 def test_failed_restore_cleanup_preserves_last_good_snapshot(environment, monkeypatch):
     root, client, backend, options = environment
     with m.sandbox_for_thread("alice", "web", **options) as first:
-        saved = m.save_session_workspace(root, m._session_key("alice", "web"), backend, first[3])
+        saved = m.save_session_workspace(root, m.session_key("alice", "web"), backend, first[3])
     m._sql(root, "UPDATE sessions SET sandbox_id=NULL,status='archived'")
     monkeypatch.setattr(m, "restore_workspace", Mock(side_effect=RuntimeError("upload interrupted")))
     client.delete.side_effect = RuntimeError("network")
@@ -249,7 +249,7 @@ def test_failed_restore_cleanup_preserves_last_good_snapshot(environment, monkey
 def test_retains_two_versions_after_successful_commit(environment):
     root, client, backend, options = environment
     with m.sandbox_for_thread("alice", "web", **options) as resources:
-        paths = [m.save_session_workspace(root, m._session_key("alice", "web"), backend, resources[3]) for _ in range(3)]
+        paths = [m.save_session_workspace(root, m.session_key("alice", "web"), backend, resources[3]) for _ in range(3)]
     assert not (root / paths[0]).exists()
     assert all((root / p).exists() for p in paths[1:])
 
@@ -266,7 +266,7 @@ def test_reuse_allows_agent_to_repair_broken_dependencies(environment):
 def test_restored_dependency_error_keeps_workspace_accessible(environment):
     root, client, backend, options = environment
     with m.sandbox_for_thread("alice", "restore", **options) as resources:
-        m.save_session_workspace(root, m._session_key("alice", "restore"), backend, resources[3])
+        m.save_session_workspace(root, m.session_key("alice", "restore"), backend, resources[3])
     m._sql(root, "UPDATE sessions SET sandbox_id=NULL,status='archived'")
     backend.execute.side_effect = lambda cmd: SimpleNamespace(
         exit_code=1 if "npm ci" in cmd else 0, output="lock mismatch", truncated=False)

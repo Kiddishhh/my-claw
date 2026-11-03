@@ -67,7 +67,7 @@ pytest_result.txt、junit.xml 等报告不保存。自定义运行报告统一�
 意外删除最多恢复到最近一次成功保存；按实际要求配置平台 TTL。
 `cleanup_pending` 的初始化失败资源不覆盖旧快照；明确丢失且无备份时拒绝恢复。
 
-前端删除会话接口和聊天 checkpoint 清理本阶段不实现，不要将空闲回收等同于用户删除。
+主动删除已通过 `DELETE /v1/agent/sessions/{thread_id}` 实现：取得会话锁后清理远程沙箱、checkpoint、会话级 Store 数据和本地快照，最后移除映射。失败保留删除中状态供重试，运行中的会话返回 409。不要将空闲回收等同于用户删除；详细范围见 [渠道说明](../channels/README.md)。
 
 ## 指导文件与旧验收
 

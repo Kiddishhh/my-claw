@@ -44,6 +44,7 @@ def build_subagents(
     default_model: BaseChatModel | None = None,
     max_model_calls: int = DEFAULT_SUBAGENT_MODEL_CALLS,
     user_id: str = "anonymous",
+    channel: str = "cli",
 ) -> list[SubAgent]:
     """构造独立角色；默认继承主模型，每次委派最多调用模型 max_model_calls 次。"""
     if type(max_model_calls) is not int or max_model_calls <= 0:
@@ -76,7 +77,7 @@ def build_subagents(
             "tools": tools,
             "skills": DATA_SKILLS if name == "data_analyst" else DEVELOPMENT_SKILLS,
             "middleware": [filesystem, MemoryMiddleware(backend=backend, sources=["/AGENTS.md"]),
-                           RequestContextMiddleware(user_id=user_id, channel=f"subagent:{name}"),
+                           RequestContextMiddleware(user_id=user_id, channel=channel, agent_role=name),
                            ToolAuditMiddleware(), CostMeterMiddleware(),
                            ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error")],
         }
@@ -97,6 +98,7 @@ def build_remote_subagents(
     default_model: BaseChatModel | None = None,
     max_model_calls: int = DEFAULT_SUBAGENT_MODEL_CALLS,
     user_id: str = "anonymous",
+    channel: str = "cli",
 ) -> list[SubAgent]:
     """为当前会话构建远程角色，不创建第二个沙箱，也不回退本机。
 
@@ -137,9 +139,10 @@ def build_remote_subagents(
         ("reviewer", "在 coder 改动和 tester 验证完成后只读审查，返回结构化 ReviewResult。",
          "读取实际代码、变更摘要与测试证据，检查正确性、规范和安全。使用 ReviewResult 输出；"
          "无验证证据不得宣称测试通过。发现阻塞项交主代理安排修复，不自行修改文件。", [], False),
-        ("data_analyst", "分析已在远程 data/inputs/ 中的 CSV/XLSX，计算、绘图并导出报告。",
+        ("data_analyst", "分析已上传到当前沙箱工作区的 CSV/XLSX，计算、绘图并导出报告；按委派给出的文件路径读取。",
          "先读两个数据分析技能。没有宿主表格工具；通过 execute 运行远程 Python 脚本，"
          "使用已安装的 pandas 等库，必要时安装任务依赖；不要假设沙箱存在平台 tools 模块。"
+         "优先使用委派中的沙箱绝对路径；Web/CLI 上传在 inputs/，已有项目也可使用 data/inputs/，不要求移动原始文件。"
          "数据不在沙箱时明确报告缺少输入，不尝试读取本机路径；输出仅保存在 outputs/analysis/。", [], True),
         ("general-purpose", "不适合专职角色的只读背景整理；不承担开发、测试或数据计算。",
          "仅阅读必要资料并返回摘要，不写文件、不运行命令。", [], False),
@@ -164,7 +167,7 @@ def build_remote_subagents(
             "middleware": [
                 filesystem,
                 MemoryMiddleware(backend=backend, sources=MEMORY),
-                RequestContextMiddleware(user_id=user_id, channel=f"subagent:{name}"),
+                RequestContextMiddleware(user_id=user_id, channel=channel, agent_role=name),
                 ToolAuditMiddleware(), CostMeterMiddleware(),
                 ModelCallLimitMiddleware(run_limit=max_model_calls, exit_behavior="error"),
             ],

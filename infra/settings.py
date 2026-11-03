@@ -32,10 +32,6 @@ class Settings(BaseSettings):
     max_retries: int = 12
     timeout: int = 60
 
-    # ===== 持久化底座 =====
-    postgres_url: str = "postgresql://my_claw:my_claw@localhost:5432/my_claw"
-    redis_url: str = "redis://localhost:6379/0"
-
     # ===== 运行 =====
     log_level: str = "INFO"
 

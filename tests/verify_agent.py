@@ -135,7 +135,7 @@ async def run_verification(
     try:
         from agent.main import build_local_agent as build_agent
 
-        agent = build_agent(user_id="verification", channel=mode, max_model_calls=max_model_calls,
+        agent = build_agent(user_id="verification", channel="cli", max_model_calls=max_model_calls,
                             workspace_root=workspace, model=model if model is not None else (
                                 None if live else OfflineProbeModel()))
         # 真实、离线及注入模型均遵循统一的 LangSmith 环境配置。

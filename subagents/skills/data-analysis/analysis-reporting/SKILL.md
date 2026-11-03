@@ -1,6 +1,6 @@
 ---
 name: analysis-reporting
-description: 将本地表格分析结果制作为图表、CSV/XLSX 结果表和 Markdown 报告时使用。使用 analyze_table 返回的 result_id；不凭模型猜测生成数据或宣称统计因果关系。
+description: 将实际表格分析结果制作为图表、CSV/XLSX 结果表和 Markdown 报告。本地工具使用真实 result_id，远程使用 execute 计算所得结果；不凭模型猜测数据或宣称统计因果关系。
 ---
 
 # 分析结果与报告

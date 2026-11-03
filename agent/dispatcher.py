@@ -15,13 +15,14 @@ from infra.agent_limits import DEFAULT_MODEL_CALLS, DEFAULT_SUBAGENT_MODEL_CALLS
 from infra.logging import get_logger
 from infra.settings import SandboxSettings
 from sandbox.async_session import SessionBackend, async_sandbox_session, drain
-from sandbox.manager import (sandbox_for_thread, save_session_workspace, _session_key, _sql)
+from sandbox.manager import (sandbox_for_thread, save_session_workspace,
+                             session_key, get_dependency_warning)
 
 logger = get_logger()
 
 
 async def run_task(
-    thread_id: str, message: str, *, user_id: str = "local-user",
+    thread_id: str, message: str, *, user_id: str = "local-user", channel: str = "cli",
     project_root: Path | None = None, settings: SandboxSettings | None = None,
     checkpointer: BaseCheckpointSaver, store: BaseStore,
     client: Any = None, model: Any = None,
@@ -45,14 +46,13 @@ callbacks 用于内部验收/观测；include_state 仅供内部脚本取回图�
     async with async_sandbox_session(context) as (resources, worker):
         backend, sandbox, _, workdir = resources
         backend = SessionBackend(backend, worker)
-        key = _session_key(user_id, thread_id)
-        agent = build_agent(backend=backend, workdir=workdir, user_id=user_id, model=model,
+        # channel 仅用于请求来源，不参与会话键，保证历史 checkpoint/沙箱继续复用。
+        key = session_key(user_id, thread_id)
+        agent = build_agent(backend=backend, workdir=workdir, user_id=user_id, channel=channel, model=model,
                             checkpointer=checkpointer, store=store,
                             max_model_calls=max_model_calls,
                             max_subagent_model_calls=max_subagent_model_calls)
-        rows = await worker.call(_sql, root,
-            "SELECT dependency_warning FROM sessions WHERE session_key=?", (key,))
-        warning = rows[0]["dependency_warning"] if rows else None
+        warning = await worker.call(get_dependency_warning, root, key)
         task_message = message + (f"\n\n[应用环境诊断]\n{warning}" if warning else "")
 
         async def invoke():

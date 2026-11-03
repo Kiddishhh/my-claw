@@ -32,7 +32,7 @@ EXTRA_FILES = ("AGENTS.md", "pyproject.toml", "uv.lock", ".python-version")
 SAFE_ENV = {"APP_ENV": "test", "PYTHONUNBUFFERED": "1"}
 
 
-def _session_key(user_id: str, thread_id: str) -> str:
+def session_key(user_id: str, thread_id: str) -> str:
     if not user_id.strip() or not thread_id.strip():
         raise ValueError("user_id 和 thread_id 不能为空")
     # 用 JSON 避免拼接歧义；哈希作为 ASCII 标签和锁文件名，不是鉴权凭据。
@@ -58,6 +58,12 @@ def _sql(root: Path, statement: str, parameters: tuple = ()) -> list[sqlite3.Row
             if name not in columns:
                 db.execute(f"ALTER TABLE sessions ADD COLUMN {name} {kind}")
         return db.execute(statement, parameters).fetchall()
+
+
+def get_dependency_warning(root: Path, key: str) -> str | None:
+    """公开只读查询接口；调用方无需了解 SQLite 的表名和列名。"""
+    rows = _sql(root, "SELECT dependency_warning FROM sessions WHERE session_key=?", (key,))
+    return rows[0]["dependency_warning"] if rows else None
 
 
 def save_session_workspace(root: Path, key: str, backend: DaytonaSandbox, workdir: str) -> str:
@@ -200,7 +206,7 @@ def _get_or_create_locked(
     thread_id: str, root: Path, user_id: str, settings: SandboxSettings,
     client: Daytona, backend_factory: Callable[..., DaytonaSandbox],
 ) -> tuple[DaytonaSandbox, Sandbox, Daytona, str]:
-    key = _session_key(user_id, thread_id)
+    key = session_key(user_id, thread_id)
     rows = _sql(root, "SELECT * FROM sessions WHERE session_key=?", (key,))
     snapshot = rows[0]["snapshot_path"] if rows else None
     if rows and rows[0]["status"] == "archived" and not snapshot:
@@ -288,7 +294,7 @@ def get_or_create_sandbox_backend(
     root = (project_root or PROJECT_ROOT).resolve()
     settings = settings or SandboxSettings()
     client = client or create_daytona_client(settings)
-    key = _session_key(user_id, thread_id)
+    key = session_key(user_id, thread_id)
     with _lock(root, key):
         result = _get_or_create_locked(thread_id, root, user_id, settings, client, backend_factory)
         _sql(root, "UPDATE sessions SET last_used_at=? WHERE session_key=?", (time.time(), key))
@@ -309,7 +315,7 @@ def sandbox_for_thread(
     root = (project_root or PROJECT_ROOT).resolve()
     settings = settings or SandboxSettings()
     client = client or create_daytona_client(settings)
-    key = _session_key(user_id, thread_id)
+    key = session_key(user_id, thread_id)
     with _lock(root, key):
         backend, sandbox, client, workdir = _get_or_create_locked(thread_id, root, user_id, settings, client, backend_factory)
         task_failed = False
@@ -347,7 +353,7 @@ def cleanup_idle_sandboxes(
     client = client or create_daytona_client(settings)
     counts = {"deleted": 0, "busy": 0, "failed": 0}
     cutoff = time.time() - settings.syc_sandbox_idle_seconds
-    rows = _sql(root, "SELECT * FROM sessions WHERE status!='archived' AND (last_used_at<? OR status!='ready')", (cutoff,))
+    rows = _sql(root, "SELECT * FROM sessions WHERE status NOT IN ('archived','deleting','deleting_local') AND (last_used_at<? OR status!='ready')", (cutoff,))
     for row in rows:
         key = row["session_key"]
         try:
@@ -356,7 +362,7 @@ def cleanup_idle_sandboxes(
                 if not current:
                     continue
                 item = current[0]
-                if item["status"] == "archived":
+                if item["status"] in {"archived", "deleting", "deleting_local"}:
                     continue
                 if item["status"] == "ready" and item["last_used_at"] >= cutoff:
                     continue
@@ -397,3 +403,62 @@ def cleanup_idle_sandboxes(
             counts["failed"] += 1
             logger.error("回收失败，将在下轮重试：{}", type(error).__name__)
     return counts
+
+
+@contextmanager
+def session_deletion(root: Path, user_id: str, thread_id: str):
+    """非阻塞取得与 Agent 相同的锁；标记失败删除，阻止恢复半删除项目。
+
+    删除跨云端、PG、磁盘，无法用单个数据库事务包住。因此保留删除中标记，
+    所有步骤都幂等；调用方只有在全部成功后才调用 finish_session_deletion。
+    """
+    key = session_key(user_id, thread_id)
+    with _lock(root, key, timeout=0):
+        rows = _sql(root, 'SELECT * FROM sessions WHERE session_key=?', (key,))
+        remote_pending = bool(rows and rows[0]['status'] not in {'archived', 'deleting_local'})
+        status = 'deleting' if remote_pending else 'deleting_local'
+        _sql(root, 'INSERT INTO sessions(session_key,status,last_used_at) VALUES(?,?,?) '
+             'ON CONFLICT(session_key) DO UPDATE SET status=excluded.status', (key, status, time.time()))
+        yield key
+
+
+def delete_session_sandbox(root: Path, key: str, *, settings=None, client=None) -> None:
+    """持锁调用，直接删除远程工作区；用户明确删除时不再做恢复备份。"""
+    row = _sql(root, 'SELECT * FROM sessions WHERE session_key=?', (key,))[0]
+    if row['status'] == 'deleting_local':
+        return
+    client = client or create_daytona_client(settings or SandboxSettings())
+    if row['sandbox_id']:
+        try:
+            matches = [client.get(row['sandbox_id'])]
+        except DaytonaNotFoundError:
+            matches = []
+    else:
+        # 初始化中断可能尚未记录 ID，用原来的会话标签找回资源。
+        matches = list(client.list(ListSandboxesQuery(labels=_labels(key)), request_timeout=30))
+        if not matches and row['last_used_at'] >= time.time() - (settings or SandboxSettings()).syc_sandbox_idle_seconds:
+            # create 超时不代表云端创建已停止。与定时回收相同，等待一个空闲窗口
+            # 再确认，避免删除映射后迟到的云端资源无人追踪。
+            raise RuntimeError('沙箱创建结果尚未确定，请稍后重试删除')
+    for sandbox in matches:
+        try:
+            client.delete(sandbox, wait=True, timeout=120)
+        except DaytonaNotFoundError:
+            pass
+    _sql(root, "UPDATE sessions SET sandbox_id=NULL,status='deleting_local' WHERE session_key=?", (key,))
+
+
+def finish_session_deletion(root: Path, key: str) -> None:
+    """持锁删除本地快照，最后移除映射。空锁文件保留以免破坏并发锁语义。"""
+    import shutil
+    from sandbox.workspace import _inside
+    if not re.fullmatch(r'[0-9a-f]{64}', key):
+        raise ValueError('无效会话键')
+    directory = _inside(root, f'.sandbox-state/workspaces/{key}')
+    if directory.exists():
+        # 先检查完整目标树，Windows junction 也不允许跟随。
+        for current, dirs, files in os.walk(directory, followlinks=False):
+            for name in dirs + files:
+                _inside(root, (Path(current) / name).relative_to(root).as_posix())
+        shutil.rmtree(directory)
+    _sql(root, 'DELETE FROM sessions WHERE session_key=?', (key,))

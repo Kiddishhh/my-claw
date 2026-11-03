@@ -2,15 +2,15 @@
 
 import unittest
 
-from infra.settings import Settings
+from infra.settings import ResourceSettings
 
 
 class SettingsDefaultsTests(unittest.TestCase):
     def test_default_postgres_url_uses_my_claw_identifier(self) -> None:
-        settings = Settings(api_key="test-key", _env_file=None)
+        settings = ResourceSettings(_env_file=None)
 
         self.assertEqual(
-            settings.postgres_url,
+            settings.postgres_url.get_secret_value(),
             "postgresql://my_claw:my_claw@localhost:5432/my_claw",
         )
 

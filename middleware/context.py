@@ -23,6 +23,7 @@ class RequestContextState(AgentState):
     request_id: NotRequired[Annotated[str, PrivateStateAttr]]
     user_id: NotRequired[Annotated[str, PrivateStateAttr]]
     channel: NotRequired[Annotated[str, PrivateStateAttr]]
+    agent_role: NotRequired[Annotated[str, PrivateStateAttr]]
 
 
 class RequestContextMiddleware(AgentMiddleware):
@@ -30,20 +31,23 @@ class RequestContextMiddleware(AgentMiddleware):
 
     state_schema = RequestContextState
 
-    def __init__(self, user_id: str = "anonymous", channel: str = "cli") -> None:
+    def __init__(self, user_id: str = "anonymous", channel: str = "cli",
+                 agent_role: str = "main") -> None:
         super().__init__()
         self.user_id = user_id
         self.channel = channel
+        self.agent_role = agent_role
 
     async def abefore_agent(self, state: RequestContextState, runtime: Runtime) -> dict[str, Any] | None:
         request_id = uuid.uuid4().hex[:12]
         logger.info(
-            "▶ 开始运行：request_id={} user={} channel={}",
-            request_id, self.user_id, self.channel,
+            "▶ 开始运行：request_id={} user={} channel={} agent_role={}",
+            request_id, self.user_id, self.channel, self.agent_role,
         )
         # 节点式钩子：直接 return dict，按 reducer 合并进状态
         return {
             "request_id": request_id,
             "user_id": self.user_id,
             "channel": self.channel,
+            "agent_role": self.agent_role,
         }

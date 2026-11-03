@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from filelock import Timeout as LockTimeout
 from agent.dispatcher import run_task
+from agent.result import extract_reply_text
 from api.dependencies import ResourcesDep
 from api.schemas.tasks import TaskRequest, TaskResponse
 from domain.errors import BusinessError
@@ -20,18 +21,13 @@ async def execute_task(body: TaskRequest, resources: ResourcesDep,
                        runner: Annotated[object, Depends(get_task_runner)]) -> TaskResponse:
     # 本机单用户身份固定在服务器；以后认证接入时改成身份依赖。
     try:
-        result = await runner(body.thread_id, body.message, user_id="local-user",
+        result = await runner(body.thread_id, body.message, user_id="local-user", channel="api",
                               checkpointer=resources.checkpointer, store=resources.store)
     except LockTimeout as exc:
         raise BusinessError("CONFLICT") from exc
     except TimeoutError as exc:
         raise BusinessError("TASK_TIMEOUT") from exc
-    content = result["reply"]
-    # 模型可能返回文本内容块；不把原始消息对象和推理块直接公开。
-    reply = content if isinstance(content, str) else "\n".join(
-        block["text"] for block in content
-        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
-    )
+    reply = extract_reply_text(result["reply"])
     saved = result["workspace_saved"]
     return TaskResponse(thread_id=body.thread_id,
                         status="completed" if saved else "save_failed",

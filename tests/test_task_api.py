@@ -22,7 +22,7 @@ def test_task_contract_and_injection(saved):
         assert result.status_code == 200
         assert result.json() == {'thread_id': 'demo-1', 'reply': '完成', 'workspace_saved': saved,
                                  'status': 'completed' if saved else 'save_failed'}
-        runner.assert_awaited_once_with('demo-1', '开发页面', user_id='local-user',
+        runner.assert_awaited_once_with('demo-1', '开发页面', user_id='local-user', channel='api',
             checkpointer=resources.checkpointer, store=resources.store)
         for body in [{'thread_id': '../x', 'message': 'work'}, {'thread_id': 'demo', 'message': ' '},
                      {'thread_id': 'demo', 'message': 'work', 'user_id': 'other'}]:
